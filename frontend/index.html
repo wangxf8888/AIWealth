@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>小金老师 - 龙抬头策略</title>
+    <link rel="stylesheet" href="css/style.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <div class="container">
+        <!-- 头部 -->
+        <header class="header">
+            <div class="avatar">
+                <img src="https://via.placeholder.com/80/FFD700/000000?text=💰" alt="小金老师">
+            </div>
+            <div class="header-info">
+                <h1>小金老师 · 龙抬头策略</h1>
+                <p>捕捉强势股回调后的二次启动机会，每日精选1只优质标的</p>
+            </div>
+        </header>
+
+        <!-- 策略概览 -->
+        <div class="strategy-summary">
+            <div class="summary-card">
+                <h3>历史总收益</h3>
+                <div class="metric" id="totalProfit">--%</div>
+            </div>
+            <div class="summary-card">
+                <h3>策略成功率</h3>
+                <div class="metric" id="winRate">--%</div>
+            </div>
+            <div class="summary-card">
+                <h3>总交易次数</h3>
+                <div class="metric" id="tradeCount">--</div>
+            </div>
+            <div class="summary-card">
+                <h3>平均收益</h3>
+                <div class="metric" id="avgProfit">--%</div>
+            </div>
+        </div>
+
+        <!-- 收益曲线图 -->
+        <div class="chart-container">
+            <h2>策略历史表现 (2025年)</h2>
+            <canvas id="profitChart"></canvas>
+        </div>
+
+        <!-- 最新信号 -->
+        <div class="latest-recommendations">
+            <h2>最新龙抬头信号</h2>
+            <div id="recommendationsList">
+                <p>加载中...</p>
+            </div>
+        </div>
+
+        <!-- 策略说明 -->
+        <div class="strategy-description">
+            <h3>龙抬头策略原理</h3>
+            <ul>
+                <li><strong>强势基础</strong>：股票近期展现强势上涨特征</li>
+                <li><strong>健康回调</strong>：从高点回调12%-30%，洗盘充分</li>
+                <li><strong>量能确认</strong>：回调过程中成交量明显放大</li>
+                <li><strong>抬头信号</strong>：出现企稳反弹，准备二次启动</li>
+                <li><strong>目标收益</strong>：固定5%预期收益目标</li>
+                <li><strong>严格纪律</strong>：每日最多1笔交易，单股持仓</li>
+            </ul>
+            <p style="margin-top: 15px; font-style: italic; color: #7f8c8d;">
+                历史表现仅供参考，策略基于技术分析，不构成投资建议
+            </p>
+        </div>
+
+        <!-- 策略优势 -->
+        <div class="strategy-advantages">
+            <h3>策略核心优势</h3>
+            <div class="advantages-grid">
+                <div class="advantage-item">
+                    <div class="advantage-icon">🎯</div>
+                    <div class="advantage-text">每日精选1只最佳标的，避免过度交易</div>
+                </div>
+                <div class="advantage-item">
+                    <div class="advantage-icon">📊</div>
+                    <div class="advantage-text">5%稳健收益目标，提高成功率</div>
+                </div>
+                <div class="advantage-item">
+                    <div class="advantage-icon">🛡️</div>
+                    <div class="advantage-text">3天持仓上限，严格风险控制</div>
+                </div>
+                <div class="advantage-item">
+                    <div class="advantage-icon">📈</div>
+                    <div class="advantage-text">单股持仓模式，专注优质机会</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="js/api.js"></script>
+    <script src="js/chart.js"></script>
+</body>
+</html>
+
