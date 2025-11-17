@@ -3,21 +3,28 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>小金老师 - 龙抬头策略</title>
+    <title>智能财富管家</title>
     <link rel="stylesheet" href="css/style.css">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body>
+    <!-- 顶部导航栏 -->
+    <nav class="navbar">
+        <div class="nav-container">
+            <ul class="nav-menu">
+                <li><a href="index.html" class="active">首页</a></li>
+                <li><a href="experts.html">策略专家</a></li>
+                <li><a href="forum.html">论坛</a></li>
+                <li><a href="about.html">关于我们</a></li>
+            </ul>
+        </div>
+    </nav>
+
     <div class="container">
         <!-- 头部 -->
         <header class="header">
-            <div class="avatar">
-                <img src="https://via.placeholder.com/80/FFD700/000000?text=💰" alt="小金老师">
-            </div>
-            <div class="header-info">
-                <h1>小金老师 · 龙抬头策略</h1>
-                <p>捕捉强势股回调后的二次启动机会，每日精选1只优质标的</p>
-            </div>
+            <h1>智能财富管家 · 金金</h1>
+            <p>专注短线交易，高频捕捉市场机会</p>
         </header>
 
         <!-- 策略概览 -->
@@ -40,55 +47,67 @@
             </div>
         </div>
 
-        <!-- 收益曲线图 -->
-        <div class="chart-container">
-            <h2>策略历史表现 (2025年)</h2>
-            <canvas id="profitChart"></canvas>
-        </div>
-
-        <!-- 最新信号 -->
-        <div class="latest-recommendations">
-            <h2>最新龙抬头信号</h2>
-            <div id="recommendationsList">
-                <p>加载中...</p>
+        <!-- 账户概览 -->
+        <div class="cost-summary">
+            <h2>账户概览</h2>
+            <div class="cost-details">
+                <div class="cost-item">
+                    <span>总成本:</span>
+                    <span id="totalCost">¥--</span>
+                </div>
+                <div class="cost-item">
+                    <span>当前市值:</span>
+                    <span id="currentValue">¥--</span>
+                </div>
+                <div class="cost-item">
+                    <span>总盈亏:</span>
+                    <span id="totalPnL" class="pnl">--%</span>
+                </div>
             </div>
         </div>
 
-        <!-- 策略说明 -->
-        <div class="strategy-description">
-            <h3>龙抬头策略原理</h3>
-            <ul>
-                <li><strong>强势基础</strong>：股票近期展现强势上涨特征</li>
-                <li><strong>健康回调</strong>：从高点回调12%-30%，洗盘充分</li>
-                <li><strong>量能确认</strong>：回调过程中成交量明显放大</li>
-                <li><strong>抬头信号</strong>：出现企稳反弹，准备二次启动</li>
-                <li><strong>目标收益</strong>：固定5%预期收益目标</li>
-                <li><strong>严格纪律</strong>：每日最多1笔交易，单股持仓</li>
-            </ul>
-            <p style="margin-top: 15px; font-style: italic; color: #7f8c8d;">
-                历史表现仅供参考，策略基于技术分析，不构成投资建议
-            </p>
+        <!-- 持仓与信号并排 -->
+        <div class="holdings-signals-container">
+            <!-- 当前持仓分布 -->
+            <div class="chart-container half">
+                <h2>当前持仓分布</h2>
+                <div class="chart-area">
+                    <canvas id="holdingsChart"></canvas>
+                </div>
+            </div>
+
+            <!-- 最新交易信号 -->
+            <div class="latest-recommendations half">
+                <h2>最新交易信号</h2>
+                <div id="recommendationsList">
+                    <p>加载中...</p>
+                </div>
+            </div>
         </div>
 
-        <!-- 策略优势 -->
+        <!-- 收益曲线图 -->
+        <div class="chart-container">
+            <h2>策略历史表现</h2>
+            <div class="chart-controls">
+                <button class="year-btn active" data-year="all">全部</button>
+                <button class="year-btn" data-year="2023">2023</button>
+                <button class="year-btn" data-year="2024">2024</button>
+                <button class="year-btn" data-year="2025">2025</button>
+            </div>
+            <div class="chart-area">
+                <canvas id="profitChart"></canvas>
+            </div>
+        </div>
+
+        <!-- 金金策略优势 -->
         <div class="strategy-advantages">
-            <h3>策略核心优势</h3>
-            <div class="advantages-grid">
-                <div class="advantage-item">
-                    <div class="advantage-icon">🎯</div>
-                    <div class="advantage-text">每日精选1只最佳标的，避免过度交易</div>
-                </div>
-                <div class="advantage-item">
-                    <div class="advantage-icon">📊</div>
-                    <div class="advantage-text">5%稳健收益目标，提高成功率</div>
-                </div>
-                <div class="advantage-item">
-                    <div class="advantage-icon">🛡️</div>
-                    <div class="advantage-text">3天持仓上限，严格风险控制</div>
-                </div>
-                <div class="advantage-item">
-                    <div class="advantage-icon">📈</div>
-                    <div class="advantage-text">单股持仓模式，专注优质机会</div>
+            <h3>金金策略核心优势</h3>
+            <div class="expert-row gold">
+                <div class="expert-name">🥇 金金</div>
+                <div class="expert-features">
+                    <div class="feature-item">🎯 短线交易 | 1-5天持仓</div>
+                    <div class="feature-item">📊 5%收益目标 | 高频机会</div>
+                    <div class="feature-item">🛡️ 严格止损 | 单股持仓</div>
                 </div>
             </div>
         </div>
@@ -96,6 +115,17 @@
 
     <script src="js/api.js"></script>
     <script src="js/chart.js"></script>
+    <script>
+        // 年份切换逻辑
+        document.querySelectorAll('.year-btn').forEach(btn => {
+            btn.addEventListener('click', function() {
+                document.querySelectorAll('.year-btn').forEach(b => b.classList.remove('active'));
+                this.classList.add('active');
+                const year = this.getAttribute('data-year');
+                window.performanceChartInstance.loadYear(year === 'all' ? null : parseInt(year));
+            });
+        });
+    </script>
 </body>
 </html>
 

@@ -54,3 +54,31 @@ CREATE INDEX IF NOT EXISTS idx_daily_ts_code ON daily_kline(ts_code);
 CREATE INDEX IF NOT EXISTS idx_daily_date ON daily_kline(trade_date);
 CREATE INDEX IF NOT EXISTS idx_index_code ON index_kline(index_code);
 CREATE INDEX IF NOT EXISTS idx_index_date ON index_kline(trade_date);
+
+-- backend/sql/create_strategy_tables.sql
+CREATE TABLE IF NOT EXISTS strategy_signals (
+    id SERIAL PRIMARY KEY,
+    signal_date DATE NOT NULL,
+    ts_code VARCHAR(20) NOT NULL,
+    name VARCHAR(100) NOT NULL,
+    buy_price NUMERIC(10,2),
+    target_price NUMERIC(10,2),
+    sell_price NUMERIC(10,2),
+    sell_date DATE,
+    is_success BOOLEAN,
+    holding_days INTEGER,
+    profit_rate NUMERIC(8,2)
+);
+
+CREATE TABLE IF NOT EXISTS strategy_summary (
+    id SERIAL PRIMARY KEY,
+    start_date DATE NOT NULL,
+    end_date DATE NOT NULL,
+    total_signals INTEGER,
+    success_signals INTEGER,
+    success_rate NUMERIC(6,2),
+    total_profit_rate NUMERIC(10,2),
+    avg_profit_per_signal NUMERIC(8,2)
+);
+
+

@@ -1,10 +1,18 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-龙抬头策略验证器（简化版）
-- 取消做T功能
-- 添加每日累计成功率和收益
-- 修复decimal.Decimal类型错误
+龙抬头策略验证器（完整版，适配新规则 + 你的表结构）
+- 表名: strategy_performance
+- 表名: strategy_summary
+- 字段: 均含 created_at
+- 新规则:
+    1. 10天内 ≥5 次涨停
+    2. 从高点回调 15%~30%
+    3. 连续2天企稳（-3%~+3%）
+    4. 第一天缩量，第二天放量
+    5. 信号日 = 企稳第二天
+    6. 买入日 = 第三天，且开盘跌幅 -3% ~ -1%
+    7. 止盈 +5%，止损 -5%
 """
 
 import os
@@ -48,89 +56,17 @@ class DragonHeadValidator:
             """, (start_date, end_date))
             return [row[0] for row in cur.fetchall()]
             
-    def get_next_trading_dates(self, start_date, days=3):
-        """获取从start_date开始的接下来N个交易日"""
+    def get_next_trading_date(self, date):
+        """获取下一个交易日"""
         with self.conn.cursor() as cur:
             cur.execute("""
-                SELECT DISTINCT trade_date 
+                SELECT MIN(trade_date) 
                 FROM daily_kline 
                 WHERE trade_date > %s
-                ORDER BY trade_date
-                LIMIT %s
-            """, (start_date, days))
-            return [row[0] for row in cur.fetchall()]
+            """, (date,))
+            result = cur.fetchone()
+            return result[0] if result and result[0] else None
             
-    def validate_single_signal(self, signal_date, ts_code, name, current_price, expected_profit):
-        """验证单个买入信号的表现"""
-        target_price = current_price * (1 + expected_profit / 100)
-        next_dates = self.get_next_trading_dates(signal_date, 4)
-        if len(next_dates) < 1:
-            return None
-            
-        buy_date = next_dates[0]
-        with self.conn.cursor() as cur:
-            cur.execute("""
-                SELECT open FROM daily_kline 
-                WHERE ts_code = %s AND trade_date = %s
-            """, (ts_code, buy_date))
-            buy_result = cur.fetchone()
-            if not buy_result or buy_result[0] is None:
-                return None
-                
-            buy_price = buy_result[0]
-            sell_price = None
-            sell_date = None
-            is_success = False
-            holding_days = 3
-            
-            for i, check_date in enumerate(next_dates[1:4]):
-                cur.execute("""
-                    SELECT high, close FROM daily_kline 
-                    WHERE ts_code = %s AND trade_date = %s
-                """, (ts_code, check_date))
-                price_result = cur.fetchone()
-                if price_result and price_result[0] is not None:
-                    day_high = price_result[0]
-                    if day_high >= target_price:
-                        sell_price = target_price
-                        sell_date = check_date
-                        is_success = True
-                        holding_days = i + 1
-                        break
-            
-            if sell_price is None:
-                if len(next_dates) >= 4:
-                    third_day = next_dates[3]
-                    cur.execute("""
-                        SELECT close FROM daily_kline 
-                        WHERE ts_code = %s AND trade_date = %s
-                    """, (ts_code, third_day))
-                    final_result = cur.fetchone()
-                    if final_result and final_result[0] is not None:
-                        sell_price = final_result[0]
-                        sell_date = third_day
-                        is_success = False
-                        holding_days = 3
-                    else:
-                        return None
-                else:
-                    return None
-            
-            profit_rate = (sell_price - buy_price) / buy_price * 100 if buy_price > 0 else 0
-                
-            return {
-                'signal_date': signal_date,
-                'ts_code': ts_code,
-                'name': name,
-                'buy_price': buy_price,
-                'target_price': target_price,
-                'sell_price': sell_price,
-                'sell_date': sell_date,
-                'is_success': is_success,
-                'holding_days': holding_days,
-                'profit_rate': round(profit_rate, 2)
-            }
-    
     def get_stock_details(self, ts_code, trade_date):
         """获取股票详细信息用于日志"""
         with self.conn.cursor() as cur:
@@ -142,23 +78,28 @@ class DragonHeadValidator:
             result = cur.fetchone()
             if result:
                 return {
-                    'close': result[0],
-                    'high_rate': result[1],
+                    'close': float(result[0]) if result[0] is not None else None,  # ✅ 转 float
+                    'high_rate': float(result[1]) if result[1] is not None else None,
                     'volume': result[2],
-                    'turnover_rate': result[3]
+                    'turnover_rate': float(result[3]) if result[3] is not None else None
                 }
         return None
     
     def validate_strategy(self, start_date, end_date, max_candidates=5):
         """
-        验证策略表现（单股持仓模式，无做T）
+        验证策略表现（单股持仓模式）
         """
-        logger.info(f"验证龙抬头策略表现（单股持仓模式）: {start_date} 到 {end_date}")
+        logger.info(f"验证新龙抬头策略表现: {start_date} 到 {end_date}")
         
         trading_dates = self.get_trading_dates(start_date, end_date)
         all_signals = []
         current_position = None
         operation_log = []
+        
+        # 清空本次回测的信号记录
+        with self.conn.cursor() as cur:
+            cur.execute("DELETE FROM strategy_performance WHERE signal_date BETWEEN %s AND %s", (start_date, end_date))
+            self.conn.commit()
         
         # 用于累计统计
         cumulative_signals = 0
@@ -172,7 +113,7 @@ class DragonHeadValidator:
             if current_position is not None:
                 sell_date = current_position.get('sell_date')
                 if sell_date and sell_date <= signal_date:
-                    # 持仓已结束，更新累计统计
+                    # 持仓已结束
                     cumulative_signals += 1
                     if current_position['is_success']:
                         cumulative_success += 1
@@ -186,7 +127,7 @@ class DragonHeadValidator:
                     operation_log.append(f"\n{signal_date}: 📈 继续持有 {current_position['name']}({current_position['ts_code']})，跳过新信号")
                     continue
             
-            # 获取龙抬头候选股
+            # 获取龙抬头候选股（新规则）
             with self.conn.cursor() as cur:
                 cur.execute("""
                     SELECT * FROM get_dragon_head_stocks(%s, %s)
@@ -202,7 +143,15 @@ class DragonHeadValidator:
                 operation_log.append("-" * 80)
                 
                 for i, cand in enumerate(candidates):
-                    ts_code, name, current_price, high_20d, pullback_pct, volume_ratio, expected_profit = cand
+                    ts_code, name, current_price, high_10d, pullback_pct, vol_ratio1, vol_ratio2, expected_profit = cand
+                    
+                    # ✅ 转为 float 避免 Decimal 错误
+                    current_price = float(current_price)
+                    high_10d = float(high_10d)
+                    pullback_pct = float(pullback_pct)
+                    vol_ratio1 = float(vol_ratio1)
+                    vol_ratio2 = float(vol_ratio2)
+                    expected_profit = float(expected_profit)
                     
                     stock_details = self.get_stock_details(ts_code, signal_date)
                     if stock_details:
@@ -218,39 +167,141 @@ class DragonHeadValidator:
                     operation_log.append(
                         f"{i+1:2d}. {name}({ts_code}) {rank_suffix}\n"
                         f"    当前价: {current_price:8.2f} | 回调幅度: {pullback_pct:6.2f}% | 预期收益: {expected_profit:6.2f}%\n"
-                        f"    量能比: {volume_ratio:6.2f}x | 当日最高涨幅: {high_rate_str:>8} | 成交量: {volume_str:>12} | 换手率: {turnover_str:>6}"
+                        f"    量比(第1天): {vol_ratio1:6.2f}x | 量比(第2天): {vol_ratio2:6.2f}x | 当日最高涨幅: {high_rate_str:>8} | 成交量: {volume_str:>12}"
                     )
                 
                 operation_log.append("-" * 80)
                 
                 # 选择最佳股票（第一个）
                 best_candidate = candidates[0]
-                ts_code, name, current_price, high_20d, pullback_pct, volume_ratio, expected_profit = best_candidate
+                ts_code, name, current_price, high_10d, pullback_pct, vol_ratio1, vol_ratio2, expected_profit = best_candidate
                 
-                # 简化选择理由
+                # ✅ 转为 float
+                current_price = float(current_price)
+                name = str(name)
+                ts_code = str(ts_code)
+                
                 operation_log.append(f"✅ 最终选择: {name}({ts_code}) - 排名第1的优质龙抬头信号")
                 
-                # 验证信号
-                signal_result = self.validate_single_signal(
-                    signal_date, ts_code, name, current_price, expected_profit
-                )
+                # 获取买入日（下一个交易日）
+                buy_date = self.get_next_trading_date(signal_date)
+                if not buy_date:
+                    operation_log.append(f"❌ 无法确定买入日，跳过")
+                    continue
                 
-                if signal_result:
-                    all_signals.append(signal_result)
-                    current_position = signal_result
+                # 检查买入条件：开盘跌幅 -3% ~ -1%
+                with self.conn.cursor() as cur2:
+                    cur2.execute("""
+                        SELECT open FROM daily_kline 
+                        WHERE ts_code = %s AND trade_date = %s
+                    """, (ts_code, buy_date))
+                    buy_result = cur2.fetchone()
+                    if not buy_result or buy_result[0] is None:
+                        operation_log.append(f"❌ 买入日数据缺失，跳过")
+                        continue
                     
-                    # 记录交易
-                    next_dates = self.get_next_trading_dates(signal_date, 1)
-                    actual_buy_date = next_dates[0] if next_dates else signal_date
+                    open_price = float(buy_result[0])  # ✅ 转 float
+                    open_rate = (open_price - current_price) / current_price * 100
                     
-                    operation_log.append(f"💰 {actual_buy_date}: 买入 {name}({ts_code}) @ {signal_result['buy_price']:.2f}")
-                    operation_log.append(f"   目标卖出价: {signal_result['target_price']:.2f} | 预期收益率: {expected_profit:.2f}%")
+                    if not (-3.0 <= open_rate <= -1.0):
+                        operation_log.append(f"❌ 开盘跌幅 {open_rate:.2f}%，不满足 -3% ~ -1% 买入条件，跳过")
+                        continue
+                
+                # 设置止盈止损（现在 open_price 是 float，可安全运算）
+                target_price = open_price * 1.05          # ✅ 不再报错
+                stop_loss_price = open_price * 0.95        # ✅ 不再报错
+                
+                # 模拟持有（最多5天）
+                sell_price = None
+                sell_date = None
+                is_success = False
+                holding_days = 0
+                
+                current_check_date = buy_date
+                for day in range(1, 6):  # 第1天到第5天
+                    current_check_date = self.get_next_trading_date(current_check_date)
+                    if not current_check_date:
+                        break
                     
-                    # 注意：此时还不知道结果，结果会在卖出日更新
-                else:
-                    operation_log.append(f"❌ {signal_date}: 候选股数据不完整，无法执行交易")
+                    with self.conn.cursor() as cur3:
+                        cur3.execute("""
+                            SELECT high, low, close FROM daily_kline 
+                            WHERE ts_code = %s AND trade_date = %s
+                        """, (ts_code, current_check_date))
+                        price_result = cur3.fetchone()
+                        if not price_result:
+                            continue
+                        
+                        day_high = float(price_result[0])
+                        day_low = float(price_result[1])
+                        day_close = float(price_result[2])
+                        holding_days = day
+                        
+                        # 先检查是否止损
+                        if day_low <= stop_loss_price:
+                            sell_price = stop_loss_price
+                            sell_date = current_check_date
+                            is_success = False
+                            break
+                        # 再检查是否止盈
+                        elif day_high >= target_price:
+                            sell_price = target_price
+                            sell_date = current_check_date
+                            is_success = True
+                            break
+                        # 如果是最后一天，收盘卖出
+                        elif day == 5:
+                            sell_price = day_close
+                            sell_date = current_check_date
+                            is_success = (day_close > open_price)
+                            break
+                
+                if sell_price is None:
+                    operation_log.append(f"❌ 无法确定卖出价格，跳过")
+                    continue
+                
+                profit_rate = (sell_price - open_price) / open_price * 100 if open_price > 0 else 0
+                signal_result = {
+                    'signal_date': signal_date,
+                    'ts_code': ts_code,
+                    'name': name,
+                    'buy_price': open_price,
+                    'target_price': target_price,
+                    'sell_price': sell_price,
+                    'sell_date': sell_date,
+                    'is_success': is_success,
+                    'holding_days': holding_days,
+                    'profit_rate': round(profit_rate, 2)
+                }
+                
+                all_signals.append(signal_result)
+                current_position = signal_result
+                
+                # 写入数据库
+                with self.conn.cursor() as cur4:
+                    cur4.execute("""
+                        INSERT INTO strategy_performance 
+                        (signal_date, ts_code, name, buy_price, target_price, 
+                         sell_price, sell_date, is_success, holding_days, profit_rate, created_at)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                    """, (
+                        signal_result['signal_date'],
+                        signal_result['ts_code'],
+                        signal_result['name'],
+                        signal_result['buy_price'],
+                        signal_result['target_price'],
+                        signal_result['sell_price'],
+                        signal_result['sell_date'],
+                        signal_result['is_success'],
+                        signal_result['holding_days'],
+                        signal_result['profit_rate']
+                    ))
+                    self.conn.commit()
+                
+                operation_log.append(f"💰 {buy_date}: 买入 {name}({ts_code}) @ {open_price:.2f} (跌幅 {open_rate:.2f}%)")
+                operation_log.append(f"   止盈价: {target_price:.2f} | 止损价: {stop_loss_price:.2f}")
         
-        # 处理最后一个持仓（如果有的话）
+        # 处理最后一个持仓
         if current_position is not None:
             cumulative_signals += 1
             if current_position['is_success']:
@@ -261,7 +312,7 @@ class DragonHeadValidator:
             operation_log.append(f"   结果: {'成功' if current_position['is_success'] else '失败'} | 收益: {current_position['profit_rate']:.2f}%")
             operation_log.append(f"   累计统计: 交易{cumulative_signals}次 | 成功率{cumulative_success/cumulative_signals*100:.1f}% | 总收益{cumulative_profit:.2f}%")
         
-        # 输出详细操作日志
+        # 输出日志
         logger.info("\n" + "=" * 100)
         logger.info("📈 龙抬头策略详细操作日志")
         logger.info("=" * 100)
@@ -269,7 +320,7 @@ class DragonHeadValidator:
             logger.info(log_entry)
         logger.info("=" * 100)
         
-        # 计算最终策略表现
+        # 计算最终表现
         if all_signals:
             df = pd.DataFrame(all_signals)
             total_signals = int(len(df))
@@ -282,8 +333,8 @@ class DragonHeadValidator:
                 cur.execute("""
                     INSERT INTO strategy_summary 
                     (start_date, end_date, total_signals, success_signals, success_rate,
-                     total_profit_rate, avg_profit_per_signal)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                     total_profit_rate, avg_profit_per_signal, created_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
                 """, (
                     start_date, end_date, total_signals, success_signals, 
                     round(success_rate, 2), round(total_profit, 2), round(avg_profit, 2)
@@ -296,13 +347,12 @@ class DragonHeadValidator:
             logger.info(f"   总收益率: {total_profit:.2f}%")
             logger.info(f"   平均每笔收益: {avg_profit:.2f}%")
             
-            # 分析策略偏差
             self.analyze_strategy_deviation(all_signals)
         
         return all_signals
 
     def analyze_strategy_deviation(self, signals):
-        """分析策略偏差，找出表现异常的交易"""
+        """分析策略偏差"""
         logger.info("\n" + "=" * 60)
         logger.info("🔍 策略偏差分析")
         logger.info("=" * 60)
@@ -315,7 +365,6 @@ class DragonHeadValidator:
         avg_profit = df['profit_rate'].mean()
         std_profit = df['profit_rate'].std()
         
-        # 找出异常亏损的交易（低于平均值2个标准差）
         extreme_losses = df[df['profit_rate'] <= (avg_profit - 2 * std_profit)]
         extreme_wins = df[df['profit_rate'] >= (avg_profit + 2 * std_profit)]
         
@@ -329,7 +378,7 @@ class DragonHeadValidator:
             for _, signal in extreme_wins.iterrows():
                 logger.info(f"   {signal['signal_date']} {signal['name']}({signal['ts_code']}): {signal['profit_rate']:.2f}%")
         
-        # 按月份分析表现
+        # 月度分析
         df['signal_month'] = pd.to_datetime(df['signal_date']).dt.to_period('M')
         monthly_stats = df.groupby('signal_month').agg({
             'profit_rate': ['mean', 'sum', 'count'],
@@ -351,8 +400,8 @@ if __name__ == "__main__":
     validator.connect_db()
     
     try:
-        # 验证2025年龙抬头策略表现
-        signals = validator.validate_strategy('2025-01-01', '2025-10-01', max_candidates=5)
+        # ⚠️ 请务必使用你有数据的日期范围！例如 2024 年
+        signals = validator.validate_strategy('2023-01-01', '2024-12-31', max_candidates=5)
     finally:
         validator.close_db()
 
