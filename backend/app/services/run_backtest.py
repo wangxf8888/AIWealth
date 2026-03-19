@@ -5,14 +5,26 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from services.backtest_engine import BacktestEngine
 from services.strategies.dragon_head_turnover import DragonHeadTurnoverStrategy
+from services.strategies.chase_limit_up import ChaseLimitUpStrategy
+from services.strategies.break_one_word import BreakOneWordStrategy
+from services.strategies.turnover_shrink import TurnoverShrinkStrategy
 
 if __name__ == "__main__":
     # 配置回测区间 (根据你的数据库实际有效范围)
-    START_DATE = "2025-03-07"
-    END_DATE = "2026-03-06"
+    START_DATE = "2022-03-07"
+    END_DATE = "2026-03-20"
 
     # 初始化策略
-    strategy = DragonHeadTurnoverStrategy()
+    # strategy = DragonHeadTurnoverStrategy()
+
+    # 追板策略
+    # strategy = ChaseLimitUpStrategy(entry_board=1, use_core_pool=False)
+
+    # 一字板首破
+    #strategy = BreakOneWordStrategy(use_core_pool=True)
+
+    # 换手率选股
+    strategy = TurnoverShrinkStrategy(use_core_pool=True)
 
     # 运行引擎
     engine = BacktestEngine(

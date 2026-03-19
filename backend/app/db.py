@@ -171,9 +171,55 @@ def init_db():
         update_time TEXT
     )''')
 
+    # 11. 每日候选池表 (缺失修复)
+    c.execute('''CREATE TABLE IF NOT EXISTS daily_candidates (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        trade_date TEXT,
+        code TEXT,
+        score REAL,
+        reason TEXT,
+        sector TEXT,
+        created_at TEXT,
+        UNIQUE(trade_date, code)
+    )''')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_dc_date ON daily_candidates(trade_date)')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_dc_score ON daily_candidates(score)')
+
+    # 12. 分析报告表 (缺失修复)
+    c.execute('''CREATE TABLE IF NOT EXISTS analysis_reports (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        report_date TEXT,
+        period TEXT, -- 'pre', 'intra', 'post'
+        content TEXT,
+        created_at TEXT
+    )''')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_ar_date_period ON analysis_reports(report_date, period)')
+
+    # 13. 用户持仓表 (缺失修复，用于模拟交易)
+    c.execute('''CREATE TABLE IF NOT EXISTS positions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        code TEXT,
+        hold_volume INTEGER,
+        cost_price REAL,
+        update_time TEXT,
+        UNIQUE(user_id, code)
+    )''')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_pos_user ON positions(user_id)')
+
+    # 14. 用户表 (基础权限)
+    c.execute('''CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT UNIQUE,
+        password_hash TEXT,
+        role TEXT DEFAULT 'user', -- 'admin' or 'user'
+        is_vip INTEGER DEFAULT 0,
+        created_at TEXT
+    )''')
+
     conn.commit()
     conn.close()
-    print("✅ Database schema initialized successfully.")
+    print("✅ Database schema initialized successfully with all tables.")
 
 def get_trade_date_range(conn, start_date, end_date):
     """

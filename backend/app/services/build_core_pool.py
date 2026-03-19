@@ -1,7 +1,23 @@
 import sqlite3
 import pandas as pd
 from datetime import datetime, timedelta
-from ..db import get_conn
+import sys
+import os
+from pathlib import Path
+
+# 【智能导入修复】
+# 尝试相对导入 (适用于 python -m services.sync_data)
+try:
+    from ..db import get_conn, DB_PATH
+except ImportError:
+    # 如果失败 (适用于直接运行 python sync_data.py 或 crontab)
+    # 手动将 app 目录加入路径
+    current_dir = Path(__file__).resolve().parent
+    app_dir = current_dir.parent
+    if str(app_dir) not in sys.path:
+        sys.path.insert(0, str(app_dir))
+
+    from db import get_conn, DB_PATH
 
 def calculate_limit_up_price(prev_close, code):
     """精确计算理论涨停价"""

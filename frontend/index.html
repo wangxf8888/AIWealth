@@ -3,374 +3,526 @@
 
 <head>
     <meta charset="UTF-8">
-    <title>AIWealth 智能理财助手</title>
-    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AIWealth Pro - 策略回测中心</title>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+    <script src="https://cdn.bootcdn.net/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
     <style>
+        [v-cloak] {
+            display: none;
+        }
+
         body {
-            font-family: 'Segoe UI', sans-serif;
-            background: #f0f2f5;
-            margin: 0;
-            padding: 20px;
-            color: #333;
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+            background-color: #f3f4f6;
         }
 
-        .container {
-            max-width: 1400px;
-            margin: 0 auto;
+        /* 自定义滚动条 */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
         }
 
-        .header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 20px;
+        ::-webkit-scrollbar-track {
+            background: #f1f1f1;
         }
 
-        .card {
-            background: white;
-            padding: 20px;
-            border-radius: 8px;
-            box-shadow: 0 2px 12px rgba(0, 0, 0, 0.05);
-            margin-bottom: 20px;
-        }
-
-        h2 {
-            color: #1890ff;
-            border-left: 5px solid #1890ff;
-            padding-left: 10px;
-            margin-top: 0;
-            font-size: 1.2rem;
-        }
-
-        .grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
-            gap: 20px;
-        }
-
-        .full-width {
-            grid-column: 1 / -1;
-        }
-
-        /* 表格样式 */
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 0.9rem;
-        }
-
-        th,
-        td {
-            text-align: left;
-            padding: 10px;
-            border-bottom: 1px solid #eee;
-        }
-
-        th {
-            background: #fafafa;
-            color: #666;
-        }
-
-        .red {
-            color: #f5222d;
-        }
-
-        .green {
-            color: #52c41a;
-        }
-
-        /* 按钮与输入 */
-        .btn {
-            background: #1890ff;
-            color: white;
-            border: none;
-            padding: 6px 12px;
-            cursor: pointer;
+        ::-webkit-scrollbar-thumb {
+            background: #c1c1c1;
             border-radius: 4px;
-            transition: 0.3s;
         }
 
-        .btn:hover {
-            background: #40a9ff;
+        ::-webkit-scrollbar-thumb:hover {
+            background: #a8a8a8;
         }
 
-        .btn-sm {
-            padding: 2px 6px;
-            font-size: 0.8rem;
+        /* 动画效果 */
+        .fade-enter-active,
+        .fade-leave-active {
+            transition: opacity 0.4s ease;
         }
 
-        input {
-            padding: 6px;
-            border: 1px solid #d9d9d9;
-            border-radius: 4px;
-            margin-right: 5px;
+        .fade-enter-from,
+        .fade-leave-to {
+            opacity: 0;
         }
 
-        /* 动画 */
-        .highlight {
-            color: #f5222d;
-            font-weight: bold;
-            animation: blink 1s infinite;
+        .slide-up-enter-active {
+            transition: all 0.5s ease-out;
         }
 
-        @keyframes blink {
-            50% {
-                opacity: 0.6;
-            }
-        }
-
-        .tag {
-            padding: 2px 6px;
-            border-radius: 4px;
-            font-size: 0.75rem;
-            background: #e6f7ff;
-            color: #1890ff;
-            border: 1px solid #91d5ff;
+        .slide-up-enter-from {
+            opacity: 0;
+            transform: translateY(20px);
         }
     </style>
 </head>
 
-<body>
-    <div id="app" class="container">
-        <div class="header">
-            <h1>🚀 AIWealth <small style="font-size:0.5em; color:#666; font-weight:normal">智能理财助手 | Server:
-                    8.130.138.22</small></h1>
-            <div>
-                <span class="tag">模拟模式</span>
-                <span class="tag">{{ currentTime }}</span>
-            </div>
-        </div>
+<body class="text-gray-800 antialiased">
+    <div id="app" v-cloak class="min-h-screen flex flex-col">
 
-        <!-- 分析报告 -->
-        <div class="card full-width">
-            <h2>🧠 AI 市场分析</h2>
-            <div style="margin-bottom: 10px;">
-                <button class="btn" :class="{ 'btn-active': activeTab==='pre'}"
-                    @click="loadAnalysis('pre')">盘前策略</button>
-                <button class="btn" :class="{ 'btn-active': activeTab==='intra'}"
-                    @click="loadAnalysis('intra')">盘中监控</button>
-                <button class="btn" :class="{ 'btn-active': activeTab==='post'}"
-                    @click="loadAnalysis('post')">盘后复盘</button>
-            </div>
-            <div v-if="currentAnalysis"
-                style="background: #f9f9f9; padding: 15px; border-radius: 4px; line-height: 1.6; white-space: pre-wrap;">
-                {{ currentAnalysis.content }}
-                <div style="font-size: 0.8em; color: #999; margin-top: 10px; text-align: right;">生成时间：{{
-                    currentAnalysis.time }}</div>
-            </div>
-            <div v-else style="color: #999;">加载中...</div>
-        </div>
-
-        <div class="grid">
-            <!-- 重点候选池 -->
-            <div class="card">
-                <h2>🔥 重点监控池 (核心资产)</h2>
-                <table>
-                    <thead>
-                        <tr>
-                            <th>代码</th>
-                            <th>名称</th>
-                            <th>理由</th>
-                            <th>现价</th>
-                            <th>涨幅</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <tr v-for="stock in focusList" :key="stock.code">
-                            <td>{{ stock.code }}</td>
-                            <td>{{ stock.name }}</td>
-                            <td><span class="tag">{{ stock.reason }}</span></td>
-                            <td :class="getColor(stock.realData?.change_pct)">{{ stock.realData?.price || '-' }}</td>
-                            <td :class="getColor(stock.realData?.change_pct)">
-                                {{ stock.realData ? stock.realData.change_pct + '%' : '-' }}
-                                <span v-if="stock.realData?.alert">⚡</span>
-                            </td>
-                        </tr>
-                    </tbody>
-                </table>
-                <div v-if="focusList.length === 0" style="text-align:center; padding:20px; color:#999;">数据加载中或为空</div>
-            </div>
-
-            <!-- 明日候选池 -->
-            <div class="card">
-                <h2>🎯 明日候选池 (龙抬头)</h2>
-                <table>
-                    <thead>
-                        <tr>
-                            <th>代码</th>
-                            <th>得分</th>
-                            <th>选股逻辑</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <tr v-for="cand in candidates" :key="cand.code">
-                            <td>{{ cand.code }}</td>
-                            <td style="font-weight:bold; color:#faad14">{{ cand.score }}</td>
-                            <td style="font-size:0.85rem; color:#666">{{ cand.reason }}</td>
-                        </tr>
-                    </tbody>
-                </table>
-                <div v-if="candidates.length === 0" style="text-align:center; padding:20px; color:#999;">今日暂无候选或未到生成时间
-                    (19:00)</div>
-            </div>
-
-            <!-- 持仓管理 -->
-            <div class="card full-width">
-                <h2>💼 我的持仓 (模拟)</h2>
-                <div style="display:flex; gap: 20px; margin-bottom: 15px;">
-                    <div style="flex:1">
-                        <input v-model="newCode" placeholder="股票代码 (如 600519)" style="width: 120px">
-                        <input v-model.number="newVol" type="number" placeholder="数量" style="width: 80px">
-                        <input v-model.number="newPrice" type="number" placeholder="成本价" style="width: 80px">
-                        <button class="btn" @click="addPosition('buy')">买入</button>
-                        <button class="btn" style="background:#ff4d4f" @click="addPosition('sell')">卖出</button>
+        <!-- 顶部导航栏 -->
+        <header class="bg-slate-900 text-white shadow-xl sticky top-0 z-50">
+            <div class="container mx-auto px-4 py-4 flex flex-col md:flex-row justify-between items-center gap-4">
+                <div class="flex items-center space-x-3">
+                    <div class="bg-blue-600 p-2 rounded-lg">
+                        <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M13 10V3L4 14h7v7l9-11h-7z"></path>
+                        </svg>
                     </div>
-                    <div style="flex:1; text-align:right;">
-                        <strong>总盈亏：</strong> <span :class="getColor(totalProfit)">{{ totalProfit.toFixed(2) }}</span> 元
+                    <div>
+                        <h1 class="text-xl font-bold tracking-wide">AIWealth Pro</h1>
+                        <p class="text-xs text-slate-400">智能量化回测系统 V3.0</p>
                     </div>
                 </div>
 
-                <table>
-                    <thead>
-                        <tr>
-                            <th>代码</th>
-                            <th>持仓量</th>
-                            <th>成本价</th>
-                            <th>现价</th>
-                            <th>盈亏金额</th>
-                            <th>盈亏率</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <tr v-for="pos in positions" :key="pos.code">
-                            <td>{{ pos.code }}</td>
-                            <td>{{ pos.volume }}</td>
-                            <td>{{ pos.cost.toFixed(2) }}</td>
-                            <td>{{ pos.current_price.toFixed(2) }}</td>
-                            <td :class="getColor(pos.profit)">{{ pos.profit.toFixed(2) }}</td>
-                            <td :class="getColor(pos.profit_rate)">{{ pos.profit_rate.toFixed(2) }}%</td>
-                        </tr>
-                    </tbody>
-                </table>
-                <div v-if="positions.length === 0" style="text-align:center; padding:20px; color:#999;">暂无持仓，快去买入吧！
+                <!-- 策略选择器 -->
+                <div class="flex items-center space-x-3 bg-slate-800 p-1.5 rounded-xl border border-slate-700">
+                    <span class="text-sm text-slate-400 pl-2 font-medium">当前策略:</span>
+                    <select v-model="activeStrategy" @change="switchStrategy(activeStrategy)"
+                        class="bg-slate-700 text-white text-sm font-semibold rounded-lg px-4 py-2 border-none focus:ring-2 focus:ring-blue-500 cursor-pointer hover:bg-slate-600 transition outline-none">
+                        <option v-for="s in strategies" :key="s.key" :value="s.key">
+                            {{ s.icon }} {{ s.name }}
+                        </option>
+                    </select>
                 </div>
             </div>
-        </div>
+        </header>
+
+        <main class="flex-grow container mx-auto px-4 py-8">
+
+            <!-- 加载状态 -->
+            <transition name="fade">
+                <div v-if="loading"
+                    class="fixed inset-0 bg-white/80 backdrop-blur-sm z-50 flex flex-col justify-center items-center">
+                    <div
+                        class="animate-spin rounded-full h-16 w-16 border-4 border-blue-100 border-t-blue-600 mb-4 shadow-lg">
+                    </div>
+                    <span class="text-slate-600 font-medium text-lg animate-pulse">正在计算回测数据...</span>
+                </div>
+            </transition>
+
+            <!-- 无数据状态 -->
+            <transition name="fade">
+                <div v-if="!hasData && !loading"
+                    class="max-w-md mx-auto mt-20 text-center bg-white p-8 rounded-2xl shadow-lg border border-gray-100">
+                    <div class="text-gray-300 mb-4">
+                        <svg class="mx-auto h-20 w-20" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                                d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                        </svg>
+                    </div>
+                    <h3 class="text-lg font-bold text-gray-900">暂无回测数据</h3>
+                    <p class="mt-2 text-gray-500">{{ backtestData.message || '请在服务器运行回测脚本生成数据。' }}</p>
+                </div>
+            </transition>
+
+            <!-- 主内容区 -->
+            <transition name="slide-up" appear>
+                <div v-show="hasData" class="space-y-8">
+
+                    <!-- 1. 核心指标卡片 -->
+                    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                        <!-- 总收益 -->
+                        <div
+                            class="bg-white rounded-2xl p-6 shadow-sm border border-gray-100 relative overflow-hidden group hover:shadow-md transition-shadow">
+                            <div class="absolute right-0 top-0 h-full w-1"
+                                :class="backtestData.total_return >= 0 ? 'bg-red-500' : 'bg-green-500'"></div>
+                            <div class="flex justify-between items-start">
+                                <div>
+                                    <p class="text-sm font-medium text-gray-500 uppercase tracking-wider">总收益率</p>
+                                    <h3 class="text-4xl font-extrabold mt-2 tracking-tight"
+                                        :class="backtestData.total_return >= 0 ? 'text-red-600' : 'text-green-600'">
+                                        {{ backtestData.total_return > 0 ? '+' : '' }}{{ backtestData.total_return }}%
+                                    </h3>
+                                </div>
+                                <div class="p-3 bg-gray-50 rounded-xl"
+                                    :class="backtestData.total_return >= 0 ? 'text-red-500' : 'text-green-500'">
+                                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                            d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"></path>
+                                    </svg>
+                                </div>
+                            </div>
+                            <div class="mt-4 flex items-center text-sm">
+                                <span class="text-gray-400 mr-2">总盈亏:</span>
+                                <span class="font-bold"
+                                    :class="backtestData.total_profit >= 0 ? 'text-red-600' : 'text-green-600'">
+                                    ¥{{ backtestData.total_profit?.toLocaleString() }}
+                                </span>
+                            </div>
+                        </div>
+
+                        <!-- 胜率 -->
+                        <div
+                            class="bg-white rounded-2xl p-6 shadow-sm border border-gray-100 relative overflow-hidden group hover:shadow-md transition-shadow">
+                            <div class="absolute right-0 top-0 h-full w-1 bg-blue-500"></div>
+                            <div class="flex justify-between items-start">
+                                <div>
+                                    <p class="text-sm font-medium text-gray-500 uppercase tracking-wider">交易胜率</p>
+                                    <h3 class="text-4xl font-extrabold mt-2 text-gray-800 tracking-tight">{{
+                                        backtestData.win_rate }}%</h3>
+                                </div>
+                                <div class="p-3 bg-blue-50 text-blue-600 rounded-xl">
+                                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                            d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                                    </svg>
+                                </div>
+                            </div>
+                            <div class="mt-4 text-sm text-gray-400">
+                                共完成 <span class="font-bold text-gray-600">{{ backtestData.trade_count }}</span> 笔交易
+                            </div>
+                        </div>
+
+                        <!-- 策略信息 -->
+                        <div
+                            class="bg-gradient-to-br from-indigo-50 to-white rounded-2xl p-6 shadow-sm border border-indigo-100 relative overflow-hidden">
+                            <div
+                                class="absolute -right-6 -top-6 w-24 h-24 bg-indigo-100 rounded-full opacity-50 blur-xl">
+                            </div>
+                            <p class="text-sm font-medium text-indigo-500 uppercase tracking-wider">运行策略</p>
+                            <h3 class="text-xl font-bold mt-2 text-indigo-900 break-words">{{ backtestData.strategy_name
+                                }}</h3>
+                            <div
+                                class="mt-4 inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-indigo-100 text-indigo-700">
+                                <span class="w-2 h-2 bg-indigo-500 rounded-full mr-2 animate-pulse"></span>
+                                数据已更新
+                            </div>
+                        </div>
+
+                        <!-- 数据概览 -->
+                        <div
+                            class="bg-white rounded-2xl p-6 shadow-sm border border-gray-100 flex flex-col justify-center">
+                            <div class="flex justify-between items-center mb-2">
+                                <span class="text-sm text-gray-500">曲线数据点</span>
+                                <span class="text-lg font-bold text-gray-800">{{ backtestData.curve?.length || 0
+                                    }}</span>
+                            </div>
+                            <div class="w-full bg-gray-100 rounded-full h-2.5 mb-1">
+                                <div class="bg-gray-400 h-2.5 rounded-full" style="width: 100%"></div>
+                            </div>
+                            <p class="text-xs text-gray-400 text-right">覆盖全周期</p>
+                        </div>
+                    </div>
+
+                    <!-- 2. 资金曲线图表 -->
+                    <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
+                        <div class="flex justify-between items-center mb-6">
+                            <h3 class="text-lg font-bold text-gray-800 flex items-center">
+                                <span class="w-1.5 h-6 bg-blue-600 rounded-full mr-3"></span>
+                                资金净值增长曲线
+                            </h3>
+                            <div class="text-sm text-gray-400 bg-gray-50 px-3 py-1 rounded-lg">
+                                单位：人民币 (¥)
+                            </div>
+                        </div>
+                        <div class="relative h-96 w-full bg-gray-50/50 rounded-xl border border-gray-100 p-4">
+                            <canvas ref="chartCanvas"></canvas>
+                            <div v-if="!chartRendered"
+                                class="absolute inset-0 flex items-center justify-center text-gray-400 text-sm">
+                                <span class="animate-pulse">正在渲染图表...</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 3. 交易明细表格 -->
+                    <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+                        <div class="px-6 py-5 border-b border-gray-100 bg-gray-50/50 flex justify-between items-center">
+                            <h3 class="text-lg font-bold text-gray-800 flex items-center">
+                                <span class="w-1.5 h-6 bg-green-600 rounded-full mr-3"></span>
+                                完整交易回合明细
+                            </h3>
+                            <span
+                                class="text-xs font-medium text-gray-500 bg-white border border-gray-200 px-2.5 py-1 rounded-md">
+                                按卖出时间倒序
+                            </span>
+                        </div>
+                        <div class="overflow-x-auto">
+                            <table class="w-full text-left border-collapse">
+                                <thead>
+                                    <tr class="bg-gray-50 text-gray-500 text-xs uppercase tracking-wider font-semibold">
+                                        <th class="px-6 py-4 w-16 text-center">序号</th>
+                                        <th class="px-6 py-4">股票信息</th>
+                                        <th class="px-6 py-4">买入日期</th>
+                                        <th class="px-6 py-4 text-right">买入价</th>
+                                        <th class="px-6 py-4">卖出日期</th>
+                                        <th class="px-6 py-4 text-right">卖出价</th>
+                                        <th class="px-6 py-4 text-right">盈亏金额</th>
+                                        <th class="px-6 py-4 min-w-[320px]">🧠 交易逻辑分析</th>
+                                    </tr>
+                                </thead>
+                                <tbody class="divide-y divide-gray-100 text-sm">
+                                    <tr v-for="(t, index) in [...backtestData.trades].reverse()"
+                                        :key="t.code + '_' + t.sell_date"
+                                        class="hover:bg-blue-50/60 transition-colors duration-150 group">
+
+                                        <td class="px-6 py-4 text-center font-mono text-gray-400">#{{ index + 1 }}</td>
+
+                                        <td class="px-6 py-4">
+                                            <div class="font-bold text-gray-900">{{ t.name || t.code }}</div>
+                                            <div class="text-xs text-gray-400 font-mono mt-0.5">{{ t.code }}</div>
+                                        </td>
+
+                                        <td class="px-6 py-4 font-mono text-gray-600 whitespace-nowrap">{{ t.buy_date }}
+                                        </td>
+                                        <td class="px-6 py-4 text-right font-mono text-gray-600">
+                                            {{ t.buy_price > 0 ? t.buy_price.toFixed(2) : '-' }}
+                                        </td>
+
+                                        <td class="px-6 py-4 font-mono text-gray-600 whitespace-nowrap">{{ t.sell_date
+                                            }}</td>
+                                        <td class="px-6 py-4 text-right font-mono text-gray-600">{{
+                                            t.sell_price.toFixed(2) }}</td>
+
+                                        <td class="px-6 py-4 text-right">
+                                            <span
+                                                class="inline-block px-3 py-1 rounded-full text-xs font-bold font-mono"
+                                                :class="t.profit >= 0 ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'">
+                                                {{ t.profit >= 0 ? '+' : '' }}{{ t.profit.toFixed(2) }}
+                                            </span>
+                                        </td>
+
+                                        <td class="px-6 py-4 text-gray-600 relative">
+                                            <div class="truncate cursor-help max-w-xs flex items-center"
+                                                :title="t.reason">
+                                                <span
+                                                    class="mr-2 text-gray-400 group-hover:text-blue-500 transition-colors">📝</span>
+                                                <span
+                                                    class="border-b border-dotted border-gray-300 group-hover:border-blue-400 transition-colors">{{
+                                                    t.reason }}</span>
+                                            </div>
+
+                                            <!-- 悬浮详情框 -->
+                                            <div
+                                                class="hidden group-hover:block absolute bottom-full left-0 mb-3 w-[550px] p-4 bg-slate-800 text-white text-sm rounded-xl shadow-2xl z-50 pointer-events-none transform transition-all duration-200 ease-out border border-slate-700">
+                                                <div
+                                                    class="font-bold text-blue-300 mb-2 text-xs uppercase tracking-wide border-b border-slate-600 pb-2 flex justify-between">
+                                                    <span>完整策略逻辑</span>
+                                                    <span class="text-slate-500 font-normal normal-case">{{ t.code
+                                                        }}</span>
+                                                </div>
+                                                <div
+                                                    class="whitespace-normal leading-relaxed font-mono text-slate-200 text-xs">
+                                                    {{ t.reason }}
+                                                </div>
+                                                <div
+                                                    class="absolute top-full left-8 border-8 border-transparent border-t-slate-800">
+                                                </div>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                        <!-- 表格底部 -->
+                        <div class="bg-gray-50 px-6 py-3 border-t border-gray-100 text-xs text-gray-400 text-center">
+                            显示最近 {{ backtestData.trades.length }} 笔交易记录
+                        </div>
+                    </div>
+
+                </div>
+            </transition>
+        </main>
+
+        <footer class="bg-white border-t border-gray-200 mt-auto py-8">
+            <div class="container mx-auto px-4 text-center">
+                <p class="text-gray-400 text-sm">© 2025 AIWealth Pro Quantitative System. All rights reserved.</p>
+            </div>
+        </footer>
     </div>
 
     <script>
-        const { createApp, ref, onMounted, computed } = Vue;
+        const { createApp, ref, onMounted, watch, nextTick } = Vue;
+        const API_BASE = '/api';
 
         createApp({
             setup() {
-                const focusList = ref([]);
-                const candidates = ref([]);
-                const positions = ref([]);
-                const currentAnalysis = ref(null);
-                const activeTab = ref('pre');
-                const currentTime = ref(new Date().toLocaleTimeString());
+                // 默认选择缩量回调
+                const activeStrategy = ref('shrink');
+                const loading = ref(false);
+                const chartRendered = ref(false);
+                const chartCanvas = ref(null);
 
-                // 输入框绑定
-                const newCode = ref('');
-                const newVol = ref(100);
-                const newPrice = ref(0);
-
-                const apiBase = '/api';
-
-                const getColor = (val) => {
-                    if (val === undefined || val === null) return '';
-                    return val > 0 ? 'red' : (val < 0 ? 'green' : '');
-                };
-
-                const loadFocus = async () => {
-                    try {
-                        const res = await fetch(`${apiBase}/focus/list`);
-                        const data = await res.json();
-                        focusList.value = data;
-
-                        // 并行请求实时数据 (限制并发数以防阻塞，这里简单处理)
-                        data.forEach(async (item) => {
-                            const r = await fetch(`${apiBase}/realtime/${item.code}`);
-                            const realData = await r.json();
-                            item.realData = realData;
-                        });
-                    } catch (e) { console.error(e); }
-                };
-
-                const loadCandidates = async () => {
-                    try {
-                        const res = await fetch(`${apiBase}/candidates/today`);
-                        candidates.value = await res.json();
-                    } catch (e) { console.error(e); }
-                };
-
-                const loadPositions = async () => {
-                    // 默认用户 ID 1
-                    const res = await fetch(`${apiBase}/positions/1`);
-                    positions.value = await res.json();
-                };
-
-                const loadAnalysis = async (period) => {
-                    activeTab.value = period;
-                    const res = await fetch(`${apiBase}/analysis/${period}`);
-                    currentAnalysis.value = await res.json();
-                };
-
-                const addPosition = async (action) => {
-                    if (!newCode.value) return alert('请输入代码');
-                    if (action === 'buy' && !newPrice.value) return alert('请输入买入价格');
-
-                    // 如果是卖出，尝试获取当前市价
-                    let price = newPrice.value;
-                    if (action === 'sell' && price === 0) {
-                        // 简单从现有持仓找，或者让用户输入
-                        const pos = positions.value.find(p => p.code === newCode.value);
-                        if (pos) price = pos.current_price;
-                        else price = 0;
-                    }
-
-                    try {
-                        await fetch(`${apiBase}/position`, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                                user_id: 1,
-                                code: newCode.value,
-                                volume: newVol.value,
-                                price: price || 0,
-                                action: action
-                            })
-                        });
-                        alert(`${action === 'buy' ? '买入' : '卖出'}成功`);
-                        newCode.value = '';
-                        loadPositions();
-                    } catch (e) {
-                        alert('操作失败');
-                    }
-                };
-
-                const totalProfit = computed(() => {
-                    return positions.value.reduce((sum, p) => sum + p.profit, 0);
+                const backtestData = ref({
+                    curve: [], trades: [], total_return: 0, total_profit: 0,
+                    win_rate: 0, trade_count: 0, strategy_name: '', message: ''
                 });
 
-                onMounted(() => {
-                    loadFocus();
-                    loadCandidates();
-                    loadPositions();
-                    loadAnalysis('pre');
+                let chartInstance = null;
+                let resizeObserver = null;
+                let resizeTimer = null;
 
-                    setInterval(() => {
-                        currentTime.value = new Date().toLocaleTimeString();
-                        loadFocus(); // 3 秒刷新重点池行情
-                        loadPositions(); // 刷新持仓盈亏
-                    }, 3000);
+                const strategies = [
+                    { key: 'dragon', name: '龙抬头/双底', icon: '🐉' },
+                    { key: 'chase', name: '连板接力 (1 进 2)', icon: '🚀' },
+                    { key: 'break', name: '一字开板低吸', icon: '💥' },
+                    { key: 'shrink', name: '缩量回调', icon: '📉' }
+                ];
+
+                const hasData = ref(false);
+
+                // 初始化 ResizeObserver (解决 v-show 切换不绘图问题)
+                const initResizeObserver = () => {
+                    if (!chartCanvas.value) return;
+                    if (resizeObserver) resizeObserver.disconnect();
+
+                    resizeObserver = new ResizeObserver(entries => {
+                        for (let entry of entries) {
+                            const width = entry.contentRect.width;
+                            const height = entry.contentRect.height;
+
+                            if (width > 0 && height > 0 && backtestData.value.curve && backtestData.value.curve.length > 0) {
+                                if (!chartRendered.value) {
+                                    console.log('[ResizeObserver] 尺寸就绪，首次绘图');
+                                    renderChart(backtestData.value.curve);
+                                } else if (chartInstance) {
+                                    // 防抖 resize
+                                    if (resizeTimer) clearTimeout(resizeTimer);
+                                    resizeTimer = setTimeout(() => chartInstance.resize(), 100);
+                                }
+                            }
+                        }
+                    });
+                    resizeObserver.observe(chartCanvas.value);
+                };
+
+                const switchStrategy = (key) => {
+                    // 切换策略时重置状态
+                    chartRendered.value = false;
+                    if (chartInstance) {
+                        chartInstance.destroy();
+                        chartInstance = null;
+                    }
+                    fetchBacktestData(key);
+                };
+
+                const renderChart = (dataPoints) => {
+                    const ctx = chartCanvas.value;
+                    if (!ctx || ctx.offsetWidth === 0) return;
+
+                    if (chartInstance) chartInstance.destroy();
+
+                    try {
+                        const labels = dataPoints.map(p => p.date.substring(5));
+                        const values = dataPoints.map(p => p.value);
+                        const startVal = values.length > 0 ? values[0] : 100000;
+
+                        // 创建渐变
+                        const gradient = ctx.getContext('2d').createLinearGradient(0, 0, 0, 400);
+                        gradient.addColorStop(0, 'rgba(37, 99, 235, 0.2)');
+                        gradient.addColorStop(1, 'rgba(37, 99, 235, 0.0)');
+
+                        chartInstance = new Chart(ctx, {
+                            type: 'line',
+                            data: {
+                                labels: labels,
+                                datasets: [{
+                                    label: '账户净值',
+                                    data: values,
+                                    borderColor: '#2563eb',
+                                    backgroundColor: gradient,
+                                    borderWidth: 2.5,
+                                    fill: true,
+                                    tension: 0.4,
+                                    pointRadius: 0,
+                                    pointHoverRadius: 6,
+                                    pointHoverBackgroundColor: '#fff',
+                                    pointHoverBorderColor: '#2563eb',
+                                    pointHoverBorderWidth: 2
+                                }, {
+                                    label: '基准线',
+                                    data: new Array(labels.length).fill(startVal),
+                                    borderColor: '#9ca3af',
+                                    borderWidth: 1,
+                                    borderDash: [6, 6],
+                                    fill: false,
+                                    pointRadius: 0
+                                }]
+                            },
+                            options: {
+                                responsive: true,
+                                maintainAspectRatio: false,
+                                animation: { duration: 800, easing: 'easeOutQuart' },
+                                interaction: { mode: 'index', intersect: false },
+                                plugins: {
+                                    legend: { position: 'top', align: 'end', labels: { usePointStyle: true, boxWidth: 8 } },
+                                    tooltip: {
+                                        backgroundColor: 'rgba(255, 255, 255, 0.98)',
+                                        titleColor: '#1f2937',
+                                        bodyColor: '#4b5563',
+                                        borderColor: '#e5e7eb',
+                                        borderWidth: 1,
+                                        padding: 12,
+                                        displayColors: true,
+                                        cornerRadius: 8,
+                                        callbacks: {
+                                            label: (ctx) => ` ${ctx.dataset.label}: ¥${ctx.parsed.y.toLocaleString(undefined, { maximumFractionDigits: 0 })}`
+                                        }
+                                    }
+                                },
+                                scales: {
+                                    y: {
+                                        beginAtZero: false,
+                                        grid: { color: '#f3f4f6', drawBorder: false },
+                                        ticks: {
+                                            color: '#9ca3af',
+                                            callback: (val) => '¥' + (val / 10000).toFixed(1) + 'w',
+                                            font: { size: 11 }
+                                        }
+                                    },
+                                    x: {
+                                        grid: { display: false },
+                                        ticks: { color: '#9ca3af', font: { size: 11 }, maxRotation: 0, autoSkip: true, maxTicksLimit: 10 }
+                                    }
+                                }
+                            }
+                        });
+
+                        chartRendered.value = true;
+                        console.log('[Success] 图表渲染完成');
+                    } catch (err) {
+                        console.error('[Error] 图表失败:', err);
+                    }
+                };
+
+                watch(() => backtestData.value.curve, (newCurve) => {
+                    if (newCurve && newCurve.length > 0) {
+                        hasData.value = true;
+                        // 如果此时 Canvas 已有尺寸，立即绘制（防止 Observer 漏掉初始状态）
+                        nextTick(() => {
+                            if (chartCanvas.value && chartCanvas.value.offsetWidth > 0 && !chartRendered.value) {
+                                renderChart(newCurve);
+                            }
+                        });
+                    }
+                }, { deep: true });
+
+                const fetchBacktestData = async (key) => {
+                    loading.value = true;
+                    try {
+                        const res = await fetch(`${API_BASE}/backtest/${key}`);
+                        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                        const data = await res.json();
+                        backtestData.value = data;
+                    } catch (e) {
+                        console.error('[Error]', e);
+                        backtestData.value.message = "数据加载失败，请检查后端服务。";
+                    } finally {
+                        loading.value = false;
+                    }
+                };
+
+                onMounted(() => {
+                    fetchBacktestData(activeStrategy.value);
+                    nextTick(() => initResizeObserver());
                 });
 
                 return {
-                    focusList, candidates, positions, currentAnalysis, activeTab, currentTime,
-                    newCode, newVol, newPrice, totalProfit,
-                    loadAnalysis, addPosition, getColor
+                    activeStrategy, strategies, loading, backtestData, hasData, chartRendered, chartCanvas,
+                    switchStrategy
                 };
             }
         }).mount('#app');

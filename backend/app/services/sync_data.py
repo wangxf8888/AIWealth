@@ -3,7 +3,23 @@ import sqlite3
 import pandas as pd
 import time
 from datetime import datetime, timedelta
-from ..db import get_conn, DB_PATH
+import sys
+import os
+from pathlib import Path
+
+# 【智能导入修复】
+# 尝试相对导入 (适用于 python -m services.sync_data)
+try:
+    from ..db import get_conn, DB_PATH
+except ImportError:
+    # 如果失败 (适用于直接运行 python sync_data.py 或 crontab)
+    # 手动将 app 目录加入路径
+    current_dir = Path(__file__).resolve().parent
+    app_dir = current_dir.parent
+    if str(app_dir) not in sys.path:
+        sys.path.insert(0, str(app_dir))
+
+    from db import get_conn, DB_PATH
 
 # 全局标记，防止重复登录
 _current_session = None
@@ -53,16 +69,16 @@ def update_basics():
 
     try:
         # 确定基准日期
-        yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-        print(f"Step 1: Fetching all security codes for date: {yesterday} ...")
+        now_str = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+        print(f"Step 1: Fetching all security codes for date: {now_str} ...")
 
-        rs_list = bs.query_all_stock(day=yesterday)
+        rs_list = bs.query_all_stock(day=now_str)
 
-        # 降级策略：如果昨天不行，试前天
+        # 降级策略：如果今天不行，试昨天
         if rs_list.error_code != '0':
-            day_before = (datetime.now() - timedelta(days=2)).strftime("%Y-%m-%d")
-            print(f"⚠️ Fallback to date: {day_before} ...")
-            rs_list = bs.query_all_stock(day=day_before)
+            yesterday = (datetime.now() - timedelta(days=2)).strftime("%Y-%m-%d")
+            print(f"⚠️ Fallback to date: {yesterday} ...")
+            rs_list = bs.query_all_stock(day=yesterday)
 
         if rs_list.error_code != '0':
             print(f"❌ Critical: Could not fetch code list from Baostock.")
@@ -146,7 +162,7 @@ def update_basics():
                     """, (d_code, d_name, d_status, row[2], base_point, now_str))
                     index_count += 1
 
-                if (i + 1) % 500 == 0:
+                if (i + 1) % 5 == 0:
                     conn.commit()
                     print(f"   Progress: {i+1}/{len(code_candidates)}, Stocks: {stock_count}, Indices: {index_count}")
 
@@ -247,11 +263,13 @@ def fetch_and_convert_hourly_rates(code, date_str, preclose):
     except Exception as e:
         return {}
 
-def update_daily_k():
+def update_daily_k(days_to_update=3):
     """
-    【终极稳健版】全量历史数据同步 (2 年) + 自动重试 + 数据清洗
+    【修复版】智能增量更新 K 线
+    逻辑：检查【今天】是否有数据。如果没有，则拉取最近 days_to_update 天的数据。
+    这样可以防止因起始日存在而跳过最新数据的情况。
     """
-    print(">>> Starting ROBUST Full History Update (2 Years)...")
+    print(f">>> Starting Smart Incremental K-Line Update (Last {days_to_update} Days)...")
 
     lg = bs.login()
     if lg.error_code != '0':
@@ -262,252 +280,129 @@ def update_daily_k():
     c = conn.cursor()
 
     today = datetime.now().strftime("%Y-%m-%d")
-    start_date = (datetime.now() - timedelta(days=730)).strftime("%Y-%m-%d")
-    print(f"📅 Date Range: {start_date} to {today}")
-    print("⚡ Strategy: Batch Fetch + Auto-Retry + Data Cleaning")
+    start_date = (datetime.now() - timedelta(days=days_to_update)).strftime("%Y-%m-%d")
+
+    print(f"📅 Check Range: {start_date} to {today}")
+    print(f"🎯 Target: Ensure data for {today} exists.")
 
     total_new_records = 0
     processed_stocks = 0
-    final_failures = 0
+    skip_count = 0
+    update_count = 0
 
-    # ==========================================
-    # 第一部分：更新股票
-    # ==========================================
-    print("\n--- Processing Stocks ---")
     c.execute("SELECT code, code_name FROM stock_basic")
     stocks = c.fetchall()
     total_stocks = len(stocks)
+    print(f"📊 Total stocks to check: {total_stocks}")
 
     for idx, (code, code_name) in enumerate(stocks):
         processed_stocks += 1
-        max_retries = 2
-        attempt = 0
-        success = False
 
-        while attempt < max_retries and not success:
-            try:
-                attempt += 1
-                if attempt > 1:
-                    print(f"   🔄 Retrying {code} (Attempt {attempt}/{max_retries})...")
-                    time.sleep(2) # 重试前休眠
-                    # 重新登录以防会话过期
-                    if lg.error_code != '0':
-                        lg = bs.login()
+        # 【核心修复 1】检查【今天】是否有数据，而不是检查 start_date
+        # 如果今天已经有数据了，说明这只股票今天已经更新过，可以跳过
+        c.execute("SELECT date FROM stock_daily_k WHERE code=? AND date=? LIMIT 1", (code, today))
+        has_today_data = c.fetchone()
 
-                # 【快速跳过检查】
-                c.execute("SELECT date FROM stock_daily_k WHERE code=? AND date=? LIMIT 1", (code, start_date))
-                if c.fetchone():
-                    if processed_stocks % 50 == 0:
-                        print(f"[{processed_stocks}/{total_stocks}] ✅ {code} ({code_name}): Skipped")
-                    success = True # 视为成功，跳出重试循环
-                    continue
+        if has_today_data:
+            skip_count += 1
+            if processed_stocks % 5 == 0:
+                print(f"[{processed_stocks}/{total_stocks}] ⏭️ {code}: Already updated for today.")
+            continue
 
-                # 1. 获取日 K
-                rs_daily = bs.query_history_k_data_plus(
-                    code, "date,open,high,low,close,preclose,volume,amount,turn,pctChg",
-                    start_date=start_date, end_date=today,
-                    frequency="d", adjustflag="3"
-                )
-
-                if rs_daily.error_code != '0':
-                    raise Exception(f"Daily Query Failed: {rs_daily.error_msg}")
-
-                daily_list = []
-                while rs_daily.next():
-                    daily_list.append(rs_daily.get_row_data())
-
-                if not daily_list:
-                    # 无数据不算错误，直接跳过
-                    success = True
-                    break
-
-                # 2. 批量获取小时 K
-                rs_hourly = bs.query_history_k_data_plus(
-                    code, "date,time,open,high,low,close",
-                    start_date=start_date, end_date=today,
-                    frequency="60", adjustflag="3"
-                )
-
-                hourly_map = {}
-                if rs_hourly.error_code == '0':
-                    temp_h_list = []
-                    while rs_hourly.next():
-                        temp_h_list.append(rs_hourly.get_row_data())
-
-                    if temp_h_list:
-                        df_h = pd.DataFrame(temp_h_list, columns=['date','time','open','high','low','close'])
-                        grouped = df_h.groupby('date')
-                        for date_str, group in grouped:
-                            hourly_map[date_str] = group.sort_values('time').head(4).to_dict('records')
-
-                # 3. 处理并入库
-                df_d = pd.DataFrame(daily_list, columns=['date','open','high','low','close','preclose','volume','amount','turn','pctChg'])
-                inserted_count = 0
-
-                for _, row in df_d.iterrows():
-                    date_str = row['date']
-
-                    # 查重
-                    c.execute("SELECT id FROM stock_daily_k WHERE code=? AND date=?", (code, date_str))
-                    if c.fetchone():
-                        continue
-
-                    # 【关键修复】安全转换浮点数，处理空字符串
-                    def safe_float(val, default=0.0):
-                        if val is None or val == '':
-                            return default
-                        try:
-                            return float(val)
-                        except ValueError:
-                            return default
-
-                    preclose = safe_float(row['preclose'])
-                    if preclose == 0:
-                        # 如果 preclose 为 0，尝试用 close 代替
-                        preclose = safe_float(row['close'])
-                        if preclose == 0:
-                            continue # 无法计算，跳过该行
-
-                    close_val = safe_float(row['close'])
-                    open_val = safe_float(row['open'])
-                    high_val = safe_float(row['high'])
-                    low_val = safe_float(row['low'])
-                    vol_val = safe_float(row['volume'])
-                    amt_val = safe_float(row['amount'])
-                    turn_val = safe_float(row['turn'])
-                    pct_val = safe_float(row['pctChg'])
-
-                    # 计算 Rates
-                    o_r = round((open_val - preclose) / preclose * 100, 2)
-                    c_r = round((close_val - preclose) / preclose * 100, 2)
-                    h_r = round((high_val - preclose) / preclose * 100, 2)
-                    l_r = round((low_val - preclose) / preclose * 100, 2)
-
-                    # 获取小时数据
-                    h_rows = hourly_map.get(date_str, [])
-                    hour_rates = {}
-
-                    for i, h_row in enumerate(h_rows):
-                        if i >= 4: break
-                        h_idx = i + 1
-                        ho = safe_float(h_row.get('open'))
-                        hc = safe_float(h_row.get('close'))
-                        hh = safe_float(h_row.get('high'))
-                        hl = safe_float(h_row.get('low'))
-
-                        if preclose != 0:
-                            hour_rates[f'hour{h_idx}_open_rate'] = round((ho - preclose) / preclose * 100, 2)
-                            hour_rates[f'hour{h_idx}_close_rate'] = round((hc - preclose) / preclose * 100, 2)
-                            hour_rates[f'hour{h_idx}_high_rate'] = round((hh - preclose) / preclose * 100, 2)
-                            hour_rates[f'hour{h_idx}_low_rate'] = round((hl - preclose) / preclose * 100, 2)
-
-                    sql = """
-                        INSERT INTO stock_daily_k
-                        (date, code, code_name, open, high, low, close, preclose, volume, amount, turn, pctChg,
-                         open_rate, close_rate, high_rate, low_rate,
-                         hour1_open_rate, hour1_close_rate, hour1_high_rate, hour1_low_rate,
-                         hour2_open_rate, hour2_close_rate, hour2_high_rate, hour2_low_rate,
-                         hour3_open_rate, hour3_close_rate, hour3_high_rate, hour3_low_rate,
-                         hour4_open_rate, hour4_close_rate, hour4_high_rate, hour4_low_rate)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """
-                    vals = (
-                        date_str, code, code_name,
-                        open_val, high_val, low_val, close_val,
-                        preclose, vol_val, amt_val, turn_val, pct_val,
-                        o_r, c_r, h_r, l_r,
-                        hour_rates.get('hour1_open_rate'), hour_rates.get('hour1_close_rate'), hour_rates.get('hour1_high_rate'), hour_rates.get('hour1_low_rate'),
-                        hour_rates.get('hour2_open_rate'), hour_rates.get('hour2_close_rate'), hour_rates.get('hour2_high_rate'), hour_rates.get('hour2_low_rate'),
-                        hour_rates.get('hour3_open_rate'), hour_rates.get('hour3_close_rate'), hour_rates.get('hour3_high_rate'), hour_rates.get('hour3_low_rate'),
-                        hour_rates.get('hour4_open_rate'), hour_rates.get('hour4_close_rate'), hour_rates.get('hour4_high_rate'), hour_rates.get('hour4_low_rate')
-                    )
-
-                    c.execute(sql, vals)
-                    inserted_count += 1
-                    total_new_records += 1
-
-                # 成功处理完一只股票
-                status = "✅" if inserted_count > 0 else "⚪"
-                if attempt > 1:
-                    print(f"[{processed_stocks}/{total_stocks}] {status} {code} ({code_name}): +{inserted_count} (Recovered)")
-                elif processed_stocks % 10 == 0 or inserted_count > 0:
-                    print(f"[{processed_stocks}/{total_stocks}] {status} {code} ({code_name}): +{inserted_count}")
-
-                success = True
-
-            except Exception as e:
-                error_msg = str(e)
-                if attempt == max_retries:
-                    final_failures += 1
-                    print(f"[{processed_stocks}/{total_stocks}] ❌ {code}: FAILED after retries. Error: {error_msg}")
-                else:
-                    print(f"[{processed_stocks}/{total_stocks}] ⚠️ {code}: Error ({error_msg}). Retrying...")
-
-        # 每 100 只提交一次
-        if processed_stocks % 100 == 0:
-            conn.commit()
-            print(f"   >>> Checkpoint saved at {processed_stocks}.")
-
-        # 正常休眠防限流
-        time.sleep(0.1)
-
-    conn.commit()
-
-    # ==========================================
-    # 第二部分：指数 (简化版，不含复杂重试逻辑，因数量少)
-    # ==========================================
-    print("\n--- Processing Indices ---")
-    c.execute("SELECT code, code_name FROM index_basic")
-    indices = c.fetchall()
-
-    for code, code_name in indices:
+        # 【核心修复 2】如果今天没数据，我们需要拉取最近几天的数据来补全
+        # 可能是因为今天刚收盘数据还没插，或者是前几天停牌今天才复牌
         try:
-            c.execute("SELECT date FROM index_daily_k WHERE code=? AND date=? LIMIT 1", (code, start_date))
-            if c.fetchone():
+            # 1. 获取日 K (从 start_date 到 today)
+            rs_daily = bs.query_history_k_data_plus(
+                code, "date,open,high,low,close,preclose,volume,amount,turn,pctChg",
+                start_date=start_date, end_date=today,
+                frequency="d", adjustflag="3"
+            )
+
+            if rs_daily.error_code != '0':
+                # 如果是非交易日或无数据，Baostock 可能报错或返回空，这不算错误
+                if "no data" not in rs_daily.error_msg.lower():
+                    pass # 静默失败
                 continue
 
-            rs_d = bs.query_history_k_data_plus(code, "date,open,high,low,close,preclose,volume,amount,turn,pctChg",
-                                                start_date=start_date, end_date=today, frequency="d", adjustflag="3")
-            if rs_d.error_code != '0': continue
+            daily_list = []
+            while rs_daily.next():
+                daily_list.append(rs_daily.get_row_data())
 
-            d_list = []
-            while rs_d.next(): d_list.append(rs_d.get_row_data())
-            if not d_list: continue
+            if not daily_list:
+                # 确实没有新数据 (比如停牌)
+                if processed_stocks % 5 == 0:
+                    print(f"[{processed_stocks}/{total_stocks}] ⚪ {code}: No new data from BS (maybe suspended).")
+                continue
 
-            df_d = pd.DataFrame(d_list, columns=['date','open','high','low','close','preclose','volume','amount','turn','pctChg'])
-            inserted = 0
+            # 2. 批量获取小时 K
+            rs_hourly = bs.query_history_k_data_plus(
+                code, "date,time,open,high,low,close",
+                start_date=start_date, end_date=today,
+                frequency="60", adjustflag="3"
+            )
+
+            hourly_map = {}
+            if rs_hourly.error_code == '0':
+                temp_h_list = []
+                while rs_hourly.next():
+                    temp_h_list.append(rs_hourly.get_row_data())
+                if temp_h_list:
+                    df_h = pd.DataFrame(temp_h_list, columns=['date','time','open','high','low','close'])
+                    grouped = df_h.groupby('date')
+                    for date_str, group in grouped:
+                        hourly_map[date_str] = group.sort_values('time').head(4).to_dict('records')
+
+            # 3. 处理并入库
+            df_d = pd.DataFrame(daily_list, columns=['date','open','high','low','close','preclose','volume','amount','turn','pctChg'])
+            inserted_count = 0
 
             for _, row in df_d.iterrows():
                 date_str = row['date']
-                c.execute("SELECT id FROM index_daily_k WHERE code=? AND date=?", (code, date_str))
-                if c.fetchone(): continue
 
-                # 安全转换
-                def safe_float(v, d=0.0):
-                    return float(v) if v and v != '' else d
+                # 二次查重：防止重复插入中间日期
+                c.execute("SELECT id FROM stock_daily_k WHERE code=? AND date=?", (code, date_str))
+                if c.fetchone():
+                    continue
+
+                def safe_float(val, default=0.0):
+                    if val is None or val == '': return default
+                    try: return float(val)
+                    except: return default
 
                 preclose = safe_float(row['preclose'])
                 if preclose == 0: preclose = safe_float(row['close'])
                 if preclose == 0: continue
 
-                vals = (
-                    date_str, code, code_name,
-                    safe_float(row['open']), safe_float(row['high']), safe_float(row['low']), safe_float(row['close']),
-                    preclose, safe_float(row['volume']), safe_float(row['amount']), safe_float(row['turn']), safe_float(row['pctChg']),
-                    round((safe_float(row['open']) - preclose)/preclose*100, 2),
-                    round((safe_float(row['close']) - preclose)/preclose*100, 2),
-                    round((safe_float(row['high']) - preclose)/preclose*100, 2),
-                    round((safe_float(row['low']) - preclose)/preclose*100, 2)
-                )
+                open_val = safe_float(row['open'])
+                close_val = safe_float(row['close'])
+                high_val = safe_float(row['high'])
+                low_val = safe_float(row['low'])
 
-                sql = """INSERT INTO index_daily_k (...columns...) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)"""
-                # 注意：上面 SQL 省略了列名以节省空间，实际请使用完整 SQL，参考股票部分，只是小时部分填 NULL
-                # 为严谨，这里复用完整的 SQL 字符串（略长，建议直接复制股票部分的 SQL 模板，把小时值换成 NULL）
-                # 此处为了代码简洁，假设你已知道如何构造，或者直接使用下面的简写逻辑：
+                # 计算涨跌幅
+                o_r = round((open_val - preclose) / preclose * 100, 2)
+                c_r = round((close_val - preclose) / preclose * 100, 2)
+                h_r = round((high_val - preclose) / preclose * 100, 2)
+                l_r = round((low_val - preclose) / preclose * 100, 2)
 
-                full_sql = """
-                    INSERT INTO index_daily_k
+                # 获取小时数据
+                h_rows = hourly_map.get(date_str, [])
+                hour_rates = {}
+                for i, h_row in enumerate(h_rows):
+                    if i >= 4: break
+                    h_idx = i + 1
+                    ho = safe_float(h_row.get('open'))
+                    hc = safe_float(h_row.get('close'))
+                    hh = safe_float(h_row.get('high'))
+                    hl = safe_float(h_row.get('low'))
+                    if preclose != 0:
+                        hour_rates[f'hour{h_idx}_open_rate'] = round((ho - preclose) / preclose * 100, 2)
+                        hour_rates[f'hour{h_idx}_close_rate'] = round((hc - preclose) / preclose * 100, 2)
+                        hour_rates[f'hour{h_idx}_high_rate'] = round((hh - preclose) / preclose * 100, 2)
+                        hour_rates[f'hour{h_idx}_low_rate'] = round((hl - preclose) / preclose * 100, 2)
+
+                sql = """
+                    INSERT INTO stock_daily_k
                     (date, code, code_name, open, high, low, close, preclose, volume, amount, turn, pctChg,
                      open_rate, close_rate, high_rate, low_rate,
                      hour1_open_rate, hour1_close_rate, hour1_high_rate, hour1_low_rate,
@@ -515,24 +410,50 @@ def update_daily_k():
                      hour3_open_rate, hour3_close_rate, hour3_high_rate, hour3_low_rate,
                      hour4_open_rate, hour4_close_rate, hour4_high_rate, hour4_low_rate)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                            NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)
+                            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """
-                c.execute(full_sql, vals)
-                inserted += 1
+                vals = (
+                    date_str, code, code_name,
+                    open_val, high_val, low_val, close_val,
+                    preclose, safe_float(row['volume']), safe_float(row['amount']), safe_float(row['turn']), safe_float(row['pctChg']),
+                    o_r, c_r, h_r, l_r,
+                    hour_rates.get('hour1_open_rate'), hour_rates.get('hour1_close_rate'), hour_rates.get('hour1_high_rate'), hour_rates.get('hour1_low_rate'),
+                    hour_rates.get('hour2_open_rate'), hour_rates.get('hour2_close_rate'), hour_rates.get('hour2_high_rate'), hour_rates.get('hour2_low_rate'),
+                    hour_rates.get('hour3_open_rate'), hour_rates.get('hour3_close_rate'), hour_rates.get('hour3_high_rate'), hour_rates.get('hour3_low_rate'),
+                    hour_rates.get('hour4_open_rate'), hour_rates.get('hour4_close_rate'), hour_rates.get('hour4_high_rate'), hour_rates.get('hour4_low_rate')
+                )
+                c.execute(sql, vals)
+                inserted_count += 1
                 total_new_records += 1
 
-            print(f"✅ {code} ({code_name}): +{inserted}")
-            time.sleep(0.1)
+            if inserted_count > 0:
+                update_count += 1
+                # 打印前 10 个更新的股票，避免刷屏
+                if update_count <= 10:
+                    print(f"[{processed_stocks}/{total_stocks}] ✅ {code} ({code_name}): Added {inserted_count} days (incl. {today})")
+                elif update_count == 11:
+                    print(f"... (more updates omitted for brevity)")
+
+            # 每 100 只提交一次
+            if processed_stocks % 100 == 0:
+                conn.commit()
+
+            time.sleep(0.05) # 防限流
+
         except Exception as e:
-            print(f"❌ Index {code}: {e}")
+            if processed_stocks % 50 == 0:
+                print(f"[{processed_stocks}/{total_stocks}] ❌ {code}: {str(e)[:50]}")
 
     conn.commit()
     conn.close()
     bs.logout()
 
-    print(f"\n🎉 ROBUST UPDATE FINISHED!")
-    print(f"Total Records: {total_new_records}")
-    print(f"Final Failures: {final_failures}")
+    print(f"\n🎉 UPDATE FINISHED!")
+    print(f"   Total Stocks Checked: {total_stocks}")
+    print(f"   Stocks Skipped (Already Updated): {skip_count}")
+    print(f"   Stocks Updated (New Data): {update_count}")
+    print(f"   Total New Records Inserted: {total_new_records}")
+
 
 def check_focus_strategy():
     """
@@ -560,3 +481,28 @@ def check_focus_strategy():
 
     conn.close()
     print("Focus strategy check completed.")
+
+
+# ==========================================
+# 【关键修复】添加主入口，确保脚本运行时自动执行
+# ==========================================
+if __name__ == "__main__":
+    import traceback
+
+    print("="*50)
+    print("🤖 AIWealth Auto Data Sync Started")
+    print("="*50)
+
+    try:
+        # 1. 更新基础信息
+        update_basics()
+
+        # 2. 更新 K 线 (默认最近 3 天，如需全量可改为 730)
+        # 建议日常运行保持 3-5 天即可，首次初始化可手动改大
+        update_daily_k(days_to_update=3)
+
+        print("\n✅ All tasks completed successfully.")
+    except Exception as e:
+        print(f"\n❌ Script failed: {e}")
+        traceback.print_exc()
+        sys.exit(1)
