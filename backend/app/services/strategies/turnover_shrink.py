@@ -15,7 +15,7 @@ class TurnoverShrinkStrategy(BaseStrategy):
         self.h1_close_range_min = -2.0
         self.h1_close_range_max = 2.0
 
-        self.max_hold_days = 2
+        self.max_hold_days = 7
         self.take_profit_rate = 5.0
         self.stop_loss_rate = -4.0
 

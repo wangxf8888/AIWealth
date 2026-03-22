@@ -12,7 +12,7 @@ from services.strategies.turnover_shrink import TurnoverShrinkStrategy
 if __name__ == "__main__":
     # 配置回测区间 (根据你的数据库实际有效范围)
     START_DATE = "2022-03-07"
-    END_DATE = "2026-03-20"
+    END_DATE = "2026-03-21"
 
     # 初始化策略
     # strategy = DragonHeadTurnoverStrategy()

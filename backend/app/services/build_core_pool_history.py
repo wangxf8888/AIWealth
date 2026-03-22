@@ -139,45 +139,55 @@ def check_single_stock_eligibility(conn, code, target_date):
 
 # --- 3. 主流程 ---
 
-def build_core_pool_history_auto():
+def build_core_pool_history_auto(days_to_update=5):
+    """
+    :param days_to_update: 每次只更新最近多少天的数据，大幅提速。默认为 5 天。
+                           如果是首次运行或需要全量，可传入一个很大的数字或忽略此逻辑。
+    """
     print(f"🚀 Starting Incremental Core Pool Construction (Last {days_to_update} Days)...")
 
     conn = get_conn()
     c = conn.cursor()
 
-    # 1. 获取数据库中已有的最大日期
+    # 1. 自动探测数据范围
+    c.execute("SELECT MIN(date), MAX(date) FROM stock_daily_k")
+    min_date, max_date = c.fetchone()
+
+    if not min_date or not max_date:
+        print("❌ No data found in stock_daily_k!")
+        return
+
+    print(f"📊 Data Range Detected: {min_date} to {max_date}")
+
+    # 2. 计算有效回测起点
+    # 【逻辑优化】如果是增量更新，从“已有最大日期”开始；如果是全量，从“最小日期 +365 天”开始
     c.execute("SELECT MAX(trade_date) FROM core_pool_history")
-    last_date_res = c.fetchone()[0]
+    last_existing_date = c.fetchone()[0]
 
-    # 确定开始日期
-    if last_date_res:
-        # 从最后一天的前一天开始重算 (防止漏掉跨天逻辑)
-        start_date_obj = datetime.strptime(last_date_res, "%Y-%m-%d") - timedelta(days=1)
-        print(f"ℹ️  Found existing data up to {last_date_res}. Resuming from {start_date_obj.strftime('%Y-%m-%d')}")
+    if last_existing_date:
+        # 增量模式：从最后一天的前一天开始重算（防止漏掉跨天依赖）
+        start_date_obj = datetime.strptime(last_existing_date, "%Y-%m-%d") - timedelta(days=1)
+        print(f"ℹ️  Found existing data up to {last_existing_date}. Resuming from {start_date_obj.strftime('%Y-%m-%d')}")
+
+        # 限制只更新最近 N 天 (如果距离今天很远，强制拉近到最近 N 天)
+        today_obj = datetime.strptime(max_date, "%Y-%m-%d")
+        limit_date_obj = today_obj - timedelta(days=days_to_update)
+
+        if start_date_obj < limit_date_obj:
+            start_date_obj = limit_date_obj
+            print(f"⚡ Incremental Mode: Only updating last {days_to_update} days.")
+
+        start_date_str = start_date_obj.strftime("%Y-%m-%d")
     else:
-        # 如果没有数据，则从头开始 (首次运行)
-        c.execute("SELECT MIN(date) FROM stock_daily_k")
-        min_date = c.fetchone()[0]
+        # 全量模式：从头开始
         start_date_obj = datetime.strptime(min_date, "%Y-%m-%d") + timedelta(days=365)
-        print(f"ℹ️  No history found. Starting from {start_date_obj.strftime('%Y-%m-%d')}")
+        start_date_str = start_date_obj.strftime("%Y-%m-%d")
+        print(f"ℹ️  No history found. Starting full build from {start_date_str}")
 
-    # 限制只计算最近 N 天 (如果是日常维护)
-    # 如果是首次运行，可以注释掉下面这几行让它跑全量
-    today_obj = datetime.now()
-    limit_date_obj = today_obj - timedelta(days=days_to_update)
-
-    if start_date_obj < limit_date_obj and last_date_res:
-        # 如果是增量模式，强制从 limit_date 开始
-        start_date_obj = limit_date_obj
-        print(f"⚡ Incremental Mode: Only updating last {days_to_update} days.")
-
-    start_date_str = start_date_obj.strftime("%Y-%m-%d")
-
-    # 获取结束日期 (今天)
-    end_date_str = datetime.now().strftime("%Y-%m-%d")
+    end_date_str = max_date
 
     if start_date_str > end_date_str:
-        print(f"❌ Error: Not enough data history.")
+        print(f"⚠️ Warning: Start date ({start_date_str}) is after end date ({end_date_str}). Nothing to update.")
         return
 
     print(f"✅ Effective Backtest Range: {start_date_str} to {end_date_str}")

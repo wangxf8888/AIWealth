@@ -1,0 +1,4 @@
+1，构建数据库 db.py
+2，获取历史数据 sync_data.py，update_daily_k(days_to_update=3)默认更新最近3天，第一次使用要调成比较大的天数
+3，rebuild_pool.sh 更新核心股票池
+4，回测 run_backtest.py，里面加载想要测试的模型。
