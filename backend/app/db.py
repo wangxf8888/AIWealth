@@ -58,7 +58,7 @@ def init_db():
         hour4_open_rate REAL, hour4_close_rate REAL, hour4_high_rate REAL, hour4_low_rate REAL,
         UNIQUE(date, code)
     )''')
-    c.execute('CREATE INDEX IF NOT EXISTS idx_k_code_date ON stock_daily_k(code, date)')
+    c.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_k_code_date_unique ON stock_daily_k(code, date)')
     c.execute('CREATE INDEX IF NOT EXISTS idx_k_date ON stock_daily_k(date)')
 
     # 4. 指数日 K 线表
@@ -175,6 +175,7 @@ def init_db():
     c.execute('''CREATE TABLE IF NOT EXISTS daily_candidates (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         trade_date TEXT,
+        strategy_name TEXT DEFAULT 'default',
         code TEXT,
         score REAL,
         reason TEXT,
@@ -182,8 +183,8 @@ def init_db():
         created_at TEXT,
         UNIQUE(trade_date, code)
     )''')
-    c.execute('CREATE INDEX IF NOT EXISTS idx_dc_date ON daily_candidates(trade_date)')
-    c.execute('CREATE INDEX IF NOT EXISTS idx_dc_score ON daily_candidates(score)')
+    c.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_dc_unique ON daily_candidates(trade_date, strategy_name, code)')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_dc_strategy ON daily_candidates(strategy_name)')
 
     # 12. 分析报告表 (缺失修复)
     c.execute('''CREATE TABLE IF NOT EXISTS analysis_reports (
@@ -200,6 +201,7 @@ def init_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER,
         code TEXT,
+        buy_date TEXT,
         hold_volume INTEGER,
         cost_price REAL,
         update_time TEXT,

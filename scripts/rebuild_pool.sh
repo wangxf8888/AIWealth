@@ -27,7 +27,7 @@ python3 -m services.build_core_pool_history >> $LOG_FILE 2>&1
 
 # 3. 生成明日候选
 echo "🔄 Step 3: Generating Daily Candidates..." >> $LOG_FILE
-python3 -m services.generate_daily_candidates >> $LOG_FILE 2>&1
+python3 -m services.generate_strategy_candidates >> $LOG_FILE 2>&1
 
 echo "🏁 [END] Core Pool Rebuild at $(date)" >> $LOG_FILE
 echo "" >> $LOG_FILE

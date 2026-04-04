@@ -321,7 +321,6 @@ class BacktestEngine:
                     is_future_day = (current_date > date)
                     already_sold_flag = sold_flag or is_future_day
 
-                    # 【关键】传入 buy_price 用于计算真实收益对比
                     psychology_text = self._generate_hourly_psychology(
                         row=row,
                         hour=h,
@@ -441,7 +440,7 @@ class BacktestEngine:
             print(f"❌ 保存数据库失败：{e}")
 
     def run(self):
-        print(f"🚀 开始回测策略：[{self.strategy.name}] (高精度成交版 - 分时资金校验)")
+        print(f"🚀 开始回测策略：[{self.strategy.name}] (高精度成交版 - 分时资金校验 & 严格天数控制)")
         print(f"   时间范围：{self.start_date} 至 {self.end_date}")
         print("=" * 100)
 
@@ -461,15 +460,21 @@ class BacktestEngine:
         for i, date in enumerate(trade_dates):
             prev_date = trade_dates[i-1] if i > 0 else date
 
-            # --- 阶段 1: 预演卖出，确定资金释放时间点 ---
-            sell_triggered_hour = 5 # 默认 5 代表没卖出或只在收盘后卖出 (不可用)
-            potential_sell_price = 0.0
+            # 【关键修复 1】无论今天是否卖出，只要持仓过夜，持有天数必须先 +1
+            # 放在最前面，确保天数统计准确，解决“因未卖出导致天数不增加”的死循环
+            if self.position:
+                days_held += 1
+
+            # --- 阶段 1: 确定今日是否必须卖出 (包含时间止损优先逻辑) ---
+            should_sell_today = False
+            sell_reason_preview = ""
+            sell_price_preview = 0.0
+            sell_triggered_hour = 4 # 默认尾盘
 
             if self.position:
                 code = self.position['code']
                 buy_price = self.position['buy_price']
 
-                # 获取当日数据
                 self.c.execute("""
                     SELECT close, pctChg, open, low, high, preclose, turn,
                     hour1_open_rate, hour1_close_rate, hour1_high_rate, hour1_low_rate,
@@ -484,119 +489,86 @@ class BacktestEngine:
                     row_dict = dict(row)
                     current_price = row_dict['close']
                     profit_rate = (current_price - buy_price) / buy_price
-                    temp_days_held = days_held + 1 # 模拟持有天数 +1
 
-                    should_sell = False; sell_ratio = 0.0
+                    # A. 最高优先级：时间止损 (一旦到期，无视其他信号，强制卖出)
+                    if days_held >= self.strategy.max_hold_days:
+                        should_sell_today = True
+                        sell_reason_preview = f"时间止损 ({self.strategy.max_hold_days}天)"
+                        sell_price_preview = current_price
+                        sell_triggered_hour = 4
+                    else:
+                        # B. 其次：开盘强止损 (仅在第一天有效)
+                        open_p = row_dict['open']
+                        if days_held == 1 and open_p > 0 and (open_p - buy_price) / buy_price <= -0.03:
+                            should_sell_today = True
+                            sell_reason_preview = "开盘强止损 (-3%)"
+                            sell_price_preview = open_p
+                            sell_triggered_hour = 1
 
-                    # 模拟各小时触发逻辑 (简化版，复用原有逻辑判断大致时段)
-                    # 注意：这里只是预判何时卖，不执行实际资金划转
+                        # C. 最后：策略信号 (冲高/跳水等)
+                        if not should_sell_today:
+                            res = self.strategy.check_sell_condition(code, buy_price, date, row_dict, profit_rate, days_held)
+                            if len(res) == 3:
+                                s_flag, s_reason, s_ratio = res
+                                if s_flag:
+                                    should_sell_today = True
+                                    sell_reason_preview = s_reason
+                                    if s_ratio > 0:
+                                        sell_price_preview = row_dict['preclose'] * s_ratio
+                                        # 估算时段：冲高通常发生在 H2/H3
+                                        if s_ratio > 1.04: sell_triggered_hour = 2
+                                        else: sell_triggered_hour = 4
+                                    else:
+                                        sell_price_preview = current_price
+                                        sell_triggered_hour = 4
+                            elif len(res) == 2:
+                                s_flag, s_reason = res
+                                if s_flag:
+                                    should_sell_today = True
+                                    sell_reason_preview = s_reason
+                                    sell_price_preview = current_price
+                                    sell_triggered_hour = 4
 
-                    # 1. 检查开盘强止损 (H1)
-                    open_p = row_dict['open']
-                    if temp_days_held == 1 and open_p > 0 and (open_p - buy_price) / buy_price <= -0.03:
-                        should_sell = True; sell_ratio = open_p / row_dict['preclose']
-                        sell_triggered_hour = 1
-
-                    # 2. 检查策略卖出条件 (模拟 H2, H3, H4)
-                    if not should_sell:
-                        res = self.strategy.check_sell_condition(code, buy_price, date, row_dict, profit_rate, temp_days_held)
-                        if len(res) == 3:
-                            should_sell, _, sell_ratio = res
-                            # 简单估算触发时段：如果是冲高卖，通常在 H2-H3；如果是尾盘卖，在 H4
-                            # 这里为了严谨，我们假设：
-                            # 如果 sell_ratio > 1.04 (冲高), 认为 H2/H3 触发
-                            # 否则 (时间止损/平盘), 认为 H4 触发
-                            if sell_ratio > 1.04: sell_triggered_hour = 2
-                            else: sell_triggered_hour = 4
-                        elif len(res) == 2:
-                            should_sell, _ = res
-                            sell_triggered_hour = 4 # 默认尾盘
-
-                    # 3. 检查时间止损
-                    if not should_sell and temp_days_held >= self.strategy.max_hold_days:
-                        should_sell = True
-                        sell_triggered_hour = 4 # 时间止损通常在尾盘确认
-
-                    if should_sell:
-                        if sell_ratio > 0: potential_sell_price = row_dict['preclose'] * sell_ratio
-                        else: potential_sell_price = current_price
-
-            # --- 阶段 2: 执行卖出 (如果触发) ---
+            # --- 阶段 2: 执行卖出 (如果预演决定要卖) ---
             executed_sell = False
-            if self.position and potential_sell_price > 0:
-                 # (此处复用原有的卖出执行代码，略作精简以适配流程)
+            actual_sell_hour = 4
+
+            if self.position and should_sell_today:
                  code = self.position['code']
                  buy_price = self.position['buy_price']
                  display_name = self.get_stock_display_name(code)
 
-                 # 重新查询确保数据一致 (或直接用上一步的 row_dict，为安全起见重新查一次或传递变量)
-                 # 为保持代码整洁，这里直接调用原有逻辑块，但需确保 sell_triggered_hour 已正确设置
-                 # 实际上我们可以直接把上面的逻辑合并到这里，但为了清晰，我们假设上面只是探测
+                 sell_price = sell_price_preview
+                 reason = sell_reason_preview
 
-                 # 【正式执行卖出】
-                 # 重新获取行数据用于正式计算
-                 self.c.execute("""SELECT close, pctChg, open, low, high, preclose, turn,
-                    hour1_open_rate, hour1_close_rate, hour1_high_rate, hour1_low_rate,
-                    hour2_open_rate, hour2_close_rate, hour2_high_rate, hour2_low_rate,
-                    hour3_open_rate, hour3_close_rate, hour3_high_rate, hour3_low_rate,
-                    hour4_open_rate, hour4_close_rate, hour4_high_rate, hour4_low_rate
-                    FROM stock_daily_k WHERE code=? AND date=?""", (code, date))
-                 row = self.c.fetchone()
-                 row_dict = dict(row)
+                 # 修正 sell_triggered_hour 用于资金校验
+                 if reason.startswith("开盘"): actual_sell_hour = 1
+                 elif "冲高" in reason or "跳水" in reason: actual_sell_hour = 2
+                 else: actual_sell_hour = 4
 
-                 current_price = row_dict['close']
-                 profit_rate = (current_price - buy_price) / buy_price
-                 days_held += 1
+                 sell_value = sell_price * self.position['shares']
+                 net_sell = sell_value * (1 - 0.0003)
+                 buy_cost = buy_price * self.position['shares'] * (1 + 0.0003)
+                 trade_profit = net_sell - buy_cost
 
-                 should_sell = False; reason = ""; sell_price = current_price; sell_ratio = 0.0
-                 open_p = row_dict['open']
+                 self.capital += net_sell
 
-                 if days_held == 1 and open_p > 0 and (open_p - buy_price) / buy_price <= -0.03:
-                     should_sell = True; reason = "开盘强止损 (-3%)"; sell_price = open_p
+                 self.current_trade_buy_price_rate = buy_price / row_dict['preclose'] if row_dict['preclose'] else 1.0
+                 self.export_trade_snapshot(code, 'SELL', sell_price, date, f"{reason} | 盈亏:{trade_profit:+.1f}", is_sell=True)
 
-                 if not should_sell:
-                     res = self.strategy.check_sell_condition(code, buy_price, date, row_dict, profit_rate, days_held)
-                     if len(res) == 3: should_sell, reason, sell_ratio = res
-                     else: should_sell, reason = res; sell_ratio = 0.0
-                     if should_sell and sell_ratio > 0: sell_price = row_dict['preclose'] * sell_ratio
-                     elif should_sell: sell_price = current_price
+                 status_icon = "✅ 盈利" if trade_profit > 0 else "❌ 亏损"
+                 print(f"   💥 [{date}] {status_icon} 卖出 {display_name} @ {sell_price:.2f} (持有{days_held}天) | 盈亏:{trade_profit:+,.2f}")
 
-                 if days_held >= self.strategy.max_hold_days and not should_sell:
-                     should_sell = True; reason = f"时间止损 ({self.strategy.max_hold_days}天)"; sell_price = current_price
-
-                 if should_sell:
-                    sell_value = sell_price * self.position['shares']
-                    net_sell = sell_value * (1 - 0.0003)
-                    buy_cost = buy_price * self.position['shares'] * (1 + 0.0003)
-                    trade_profit = net_sell - buy_cost
-
-                    self.capital += net_sell
-
-                    self.current_trade_buy_price_rate = buy_price / row_dict['preclose'] if row_dict['preclose'] else 1.0
-                    self.export_trade_snapshot(code, 'SELL', sell_price, date, f"{reason} | 盈亏:{trade_profit:+.1f}", is_sell=True)
-
-                    status_icon = "✅ 盈利" if trade_profit > 0 else "❌ 亏损"
-                    print(f"   💥 [{date}] {status_icon} 卖出 {display_name} @ {sell_price:.2f} | 盈亏:{trade_profit:+,.2f}")
-
-                    self.trades.append({'date': date, 'code': code, 'action': 'SELL', 'price': sell_price, 'profit': trade_profit, 'reason': reason})
-                    self.position = None
-                    days_held = 0
-                    executed_sell = True
-
-                    # 更新 sell_triggered_hour 为实际触发时间 (用于后续买入判断)
-                    # 再次简单判断时段以更新标志位
-                    if reason.startswith("开盘"): sell_triggered_hour = 1
-                    elif "冲高" in reason or "跳水" in reason: sell_triggered_hour = 2
-                    else: sell_triggered_hour = 4
+                 self.trades.append({'date': date, 'code': code, 'action': 'SELL', 'price': sell_price, 'profit': trade_profit, 'reason': reason})
+                 self.position = None
+                 days_held = 0 # 重置持有天数
+                 executed_sell = True
+                 sell_triggered_hour = actual_sell_hour # 更新全局变量供买入使用
 
             # --- 阶段 3: 选股与买入 (带资金时序校验) ---
-            # 只有空仓时才考虑买入
             if not self.position:
                 candidate_codes = []
                 scan_all_market = getattr(self.strategy, 'use_core_pool', True) == False
-
-                # ... (选股逻辑保持不变，获取 candidate_rows 和 best_code/buy_ratio) ...
-                # 为节省篇幅，这里保留原选股逻辑，重点看后面的【资金校验】
 
                 pool_data = []
                 codes = []
@@ -612,7 +584,6 @@ class BacktestEngine:
                         codes = [p['code'] for p in pool_data]
 
                 if codes:
-                    # (此处省略中间的历史数据查询代码，与原版完全一致)
                     placeholders = ','.join('?' * len(codes))
                     limit_days = 5 if scan_all_market else 25
                     history_map = {}
@@ -674,35 +645,20 @@ class BacktestEngine:
                             elif len(signal_res) == 2: should_buy, buy_ratio = signal_res
 
                         if should_buy and buy_ratio > 0:
-                            # ==========================================
-                            # 【核心修复】分时资金可用性校验
-                            # ==========================================
-                            # 1. 确定买入信号发生的时段
-                            # 逻辑：如果是 H2Open 触发的，通常认为是 H2 买入；如果是普通回调，可能是 H3/H4
-                            # 这里根据 reason 或 buy_ratio 的特征简单推断，或者直接保守估计
-                            # 假设：如果 buy_ratio 接近开盘价，是 H1/H2；如果接近收盘价，是 H4
-
-                            buy_triggered_hour = 4 # 默认保守估计为尾盘
+                            # 【资金时序校验】
+                            buy_triggered_hour = 4
                             if "H2Open" in reason or (k_row.get('hour2_open_rate', 0) > -1 and k_row.get('hour2_open_rate', 0) < 2):
-                                # 如果策略明确提到 H2 或者 H2 开盘符合特征
                                 buy_triggered_hour = 2
                             elif "H1" in reason:
                                 buy_triggered_hour = 1
                             elif "H3" in reason:
                                 buy_triggered_hour = 3
 
-                            # 2. 确定资金可用时段
-                            # 如果今天执行了卖出，资金在 sell_triggered_hour 之后可用
-                            # 如果没卖出，资金一直可用 (因为 position 为空)
-
                             capital_available_hour = 1
                             if executed_sell:
                                 capital_available_hour = sell_triggered_hour
 
-                            # 3. 校验：买入时段 必须 >= 资金可用时段
-                            # 允许相等 (例如 H4 卖出，H4 买入，视为同时刻切换)
                             if buy_triggered_hour >= capital_available_hour:
-                                # ✅ 资金时序合法，执行买入
                                 preclose = k_row.get('preclose', 0)
                                 final_buy_price = preclose * buy_ratio
                                 display_name = self.get_stock_display_name(best_code)
@@ -714,7 +670,7 @@ class BacktestEngine:
                                     cost = shares * final_buy_price + fee
                                     self.capital -= cost
                                     self.position = {'code': best_code, 'buy_date': date, 'buy_price': final_buy_price, 'shares': shares, 'highest_price': final_buy_price}
-                                    days_held = 0
+                                    days_held = 0 # 新买入，重置天数
 
                                     self.current_trade_buy_reason = reason
                                     self.current_trade_buy_date = date
@@ -725,14 +681,13 @@ class BacktestEngine:
                                         'date': date, 'code': best_code, 'action': 'BUY',
                                         'price': final_buy_price, 'profit': 0.0, 'reason': reason
                                     })
-                                    print(f"   🚀 [{date}] ✅ 买入 {display_name} @ {final_buy_price:.2f} (时段:H{buy_triggered_hour}, 资金来自:H{capital_available_hour}卖出)")
+                                    print(f"   🚀 [{date}] ✅ 买入 {display_name} @ {final_buy_price:.2f} (时段:H{buy_triggered_hour})")
                                 else:
-                                    print(f"   ⚠️ [{date}] 资金不足，无法买入 {best_code}")
+                                    print(f"   ⚠️ [{date}] 资金不足")
                             else:
-                                # ❌ 资金时序非法 (例如 H2 想买，但钱要 H4 才卖出来)
-                                print(f"   ⏳ [{date}] 跳过 {best_code}: 买点 (H{buy_triggered_hour}) 早于资金释放点 (H{capital_available_hour})，无法成交。")
+                                print(f"   ⏳ [{date}] 跳过 {best_code}: 买点 (H{buy_triggered_hour}) 早于资金释放 (H{capital_available_hour})")
                     else:
-                         if candidate_codes: print(f"   ℹ️ [{date}] 无符合买点的具体标的。")
+                         if candidate_codes: print(f"   ℹ️ [{date}] 无符合买点标的")
 
             # --- D. 记录快照 ---
             current_total_value = self.capital
