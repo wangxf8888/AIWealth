@@ -5,9 +5,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AIWealth Pro - 智能量化决策系统</title>
-    <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
-    <script src="https://cdn.bootcdn.net/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+    <!-- 🔧 稳定版 Tailwind Play CDN -->
     <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.bootcdn.net/ajax/libs/vue/3.3.4/vue.global.prod.min.js"></script>
+    <script src="https://cdn.bootcdn.net/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
     <style>
         [v-cloak] {
             display: none;
@@ -70,6 +71,27 @@
                 opacity: .5;
             }
         }
+
+        /* 基础 fallback 样式，防 CDN 延迟闪烁 */
+        .grid {
+            display: grid;
+        }
+
+        .gap-4 {
+            gap: 1rem;
+        }
+
+        .p-4 {
+            padding: 1rem;
+        }
+
+        .bg-white {
+            background: #fff;
+        }
+
+        .rounded-xl {
+            border-radius: 0.75rem;
+        }
     </style>
 </head>
 
@@ -95,9 +117,7 @@
                     <span class="text-sm text-slate-400 pl-2 font-medium">回测策略:</span>
                     <select v-model="activeStrategy" @change="switchStrategy(activeStrategy)"
                         class="bg-slate-700 text-white text-sm font-semibold rounded-lg px-4 py-2 border-none focus:ring-2 focus:ring-blue-500 cursor-pointer hover:bg-slate-600 transition outline-none">
-                        <option v-for="s in strategies" :key="s.key" :value="s.key">
-                            {{ s.icon }} {{ s.name }}
-                        </option>
+                        <option v-for="s in strategies" :key="s.key" :value="s.key">{{ s.icon }} {{ s.name }}</option>
                     </select>
                 </div>
             </div>
@@ -105,16 +125,17 @@
 
         <main class="flex-grow container mx-auto px-4 py-8 space-y-8">
 
-            <!-- 🟢 盘中实时决策看板 -->
+            <!-- 🟢 盘中实时决策看板 (双视图) -->
             <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 relative overflow-hidden">
                 <div class="absolute top-0 right-0 p-4 flex items-center space-x-2">
-                    <span class="w-2 h-2 bg-green-500 rounded-full pulse-dot"></span>
-                    <span class="text-xs text-gray-500">盘中实时 (3s刷新)</span>
+                    <span class="w-2 h-2 rounded-full pulse-dot"
+                        :class="isPostMarket ? 'bg-gray-400' : 'bg-green-500'"></span>
+                    <span class="text-xs text-gray-500">{{ isPostMarket ? '盘后静态 (3s刷新)' : '盘中实时 (3s刷新)' }}</span>
                 </div>
                 <div class="flex justify-between items-center mb-6">
                     <h3 class="text-lg font-bold text-gray-800 flex items-center">
                         <span class="w-1.5 h-6 bg-red-500 rounded-full mr-3"></span>
-                        盘中实时决策看板
+                        {{ isPostMarket ? '盘后复盘与明日展望' : '盘中实时决策看板' }}
                     </h3>
                     <div class="text-sm text-gray-500">
                         时段: <span class="font-bold text-blue-600">{{ intraday.analysis.phase || '--' }}</span> |
@@ -127,8 +148,9 @@
                     <div class="bg-gray-50 p-4 rounded-xl text-center border border-gray-100">
                         <div class="text-sm text-gray-500 mb-1">上证指数</div>
                         <div class="text-2xl font-bold"
-                            :class="intraday.analysis.sh_pct >= 0 ? 'text-red-600' : 'text-green-600'">
-                            {{ intraday.analysis.sh_pct !== undefined ? intraday.analysis.sh_pct + '%' : '--' }}
+                            :class="(intraday.analysis.sh_pct ?? 0) >= 0 ? 'text-red-600' : 'text-green-600'">
+                            {{ (intraday.analysis.sh_pct !== undefined && intraday.analysis.sh_pct !== null) ?
+                            intraday.analysis.sh_pct + '%' : '--' }}
                         </div>
                     </div>
                     <div class="bg-gray-50 p-4 rounded-xl text-center border border-gray-100">
@@ -143,48 +165,154 @@
                     </div>
                 </div>
 
-                <!-- 实时信号列表 -->
-                <div class="overflow-x-auto">
-                    <table class="w-full text-left border-collapse">
-                        <thead class="bg-gray-50 text-gray-500 text-xs uppercase tracking-wider font-semibold">
-                            <tr>
-                                <th class="px-4 py-3">触发时间</th>
-                                <th class="px-4 py-3">类型</th>
-                                <th class="px-4 py-3">股票</th>
-                                <th class="px-4 py-3">现价</th>
-                                <th class="px-4 py-3">盈亏/触发</th>
-                                <th class="px-4 py-3">策略逻辑</th>
-                            </tr>
-                        </thead>
-                        <tbody class="divide-y divide-gray-100 text-sm">
-                            <tr v-for="s in intraday.signals" :key="s.code+s.type" class="hover:bg-blue-50 transition"
-                                :class="s.type==='BUY' ? 'bg-green-50/50' : 'bg-red-50/50'">
-                                <td class="px-4 py-3 font-mono text-gray-600">{{ intraday.last_update }}</td>
-                                <td class="px-4 py-3">
-                                    <span class="px-2 py-1 rounded text-xs font-bold"
-                                        :class="s.type==='BUY' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'">
-                                        {{ s.type }}
-                                    </span>
-                                </td>
-                                <td class="px-4 py-3">
-                                    <div class="font-bold text-gray-900">{{ s.name }}</div>
-                                    <div class="text-xs text-gray-400 font-mono">{{ s.code }}</div>
-                                </td>
-                                <td class="px-4 py-3 font-mono font-medium">{{ s.price }}</td>
-                                <td class="px-4 py-3 font-mono"
-                                    :class="s.profit_rate > 0 ? 'text-red-600' : 'text-gray-600'">
-                                    {{ s.profit_rate !== 0 ? s.profit_rate + '%' : '条件触发' }}
-                                </td>
-                                <td class="px-4 py-3 text-gray-600 max-w-xs truncate" :title="s.reason">{{ s.reason }}
-                                </td>
-                            </tr>
-                            <tr v-if="intraday.signals.length === 0">
-                                <td colspan="6" class="px-4 py-8 text-center text-gray-400">
-                                    暂无实时信号，策略引擎正在监控中...
-                                </td>
-                            </tr>
-                        </tbody>
-                    </table>
+                <!-- ☀️ 盘中模式视图 -->
+                <div v-if="!isPostMarket" class="space-y-6">
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div class="bg-gray-50 p-4 rounded-xl border border-gray-100">
+                            <div class="flex justify-between items-center mb-3">
+                                <h4 class="font-bold text-gray-700">📦 当前持仓</h4>
+                                <span class="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded-full">{{
+                                    positions.length }} 只</span>
+                            </div>
+                            <div class="overflow-x-auto">
+                                <table class="w-full text-sm">
+                                    <thead class="text-gray-500 text-xs uppercase">
+                                        <tr>
+                                            <th class="py-2 text-left">代码</th>
+                                            <th class="py-2 text-right">现价</th>
+                                            <th class="py-2 text-right">盈亏</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody class="divide-y divide-gray-200">
+                                        <tr v-for="p in positions" :key="p.code">
+                                            <td class="py-2 font-mono">{{ p.code }}<br><span
+                                                    class="text-xs text-gray-400">{{ p.strategy_name || '-' }}</span>
+                                            </td>
+                                            <td class="py-2 text-right font-mono">{{ p.current_price ?? '-' }}</td>
+                                            <td class="py-2 text-right font-mono"
+                                                :class="(p.profit_rate ?? 0) >= 0 ? 'text-red-600' : 'text-green-600'">
+                                                {{ p.profit_rate !== null && p.profit_rate !== undefined ? p.profit_rate
+                                                + '%' : '-' }}</td>
+                                        </tr>
+                                        <tr v-if="positions.length === 0">
+                                            <td colspan="3" class="py-3 text-center text-gray-400 text-xs">暂无持仓</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                        <div class="bg-gray-50 p-4 rounded-xl border border-gray-100">
+                            <div class="flex justify-between items-center mb-3">
+                                <h4 class="font-bold text-gray-700">🎯 今日候选</h4>
+                                <span class="text-xs bg-purple-100 text-purple-700 px-2 py-1 rounded-full">{{
+                                    candidates.length }} 只</span>
+                            </div>
+                            <div class="overflow-x-auto">
+                                <table class="w-full text-sm">
+                                    <thead class="text-gray-500 text-xs uppercase">
+                                        <tr>
+                                            <th class="py-2 text-left">代码</th>
+                                            <th class="py-2 text-right">评分</th>
+                                            <th class="py-2 text-left">逻辑</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody class="divide-y divide-gray-200">
+                                        <tr v-for="c in candidates" :key="c.code">
+                                            <td class="py-2 font-mono">{{ c.code }}</td>
+                                            <td class="py-2 text-right font-mono font-bold">{{ c.score ?? '-' }}</td>
+                                            <td class="py-2 text-gray-600 truncate max-w-[150px]" :title="c.reason">{{
+                                                c.reason || '-' }}</td>
+                                        </tr>
+                                        <tr v-if="candidates.length === 0">
+                                            <td colspan="3" class="py-3 text-center text-gray-400 text-xs">今日无候选</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                    <!-- 实时信号 -->
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left border-collapse">
+                            <thead class="bg-gray-50 text-gray-500 text-xs uppercase tracking-wider font-semibold">
+                                <tr>
+                                    <th class="px-4 py-3">触发时间</th>
+                                    <th class="px-4 py-3">类型</th>
+                                    <th class="px-4 py-3">股票</th>
+                                    <th class="px-4 py-3">现价</th>
+                                    <th class="px-4 py-3">盈亏/触发</th>
+                                    <th class="px-4 py-3">策略逻辑</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-gray-100 text-sm">
+                                <tr v-for="s in intraday.signals" :key="s.code+s.type"
+                                    class="hover:bg-blue-50 transition"
+                                    :class="s.type==='BUY' ? 'bg-green-50/50' : 'bg-red-50/50'">
+                                    <td class="px-4 py-3 font-mono text-gray-600">{{ s.time || intraday.last_update }}
+                                    </td>
+                                    <td class="px-4 py-3"><span class="px-2 py-1 rounded text-xs font-bold"
+                                            :class="s.type==='BUY' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'">{{
+                                            s.type }}</span></td>
+                                    <td class="px-4 py-3">
+                                        <div class="font-bold text-gray-900">{{ s.name || s.code }}</div>
+                                        <div class="text-xs text-gray-400 font-mono">{{ s.code }}</div>
+                                    </td>
+                                    <td class="px-4 py-3 font-mono font-medium">{{ s.price ?? '-' }}</td>
+                                    <td class="px-4 py-3 font-mono"
+                                        :class="(s.profit_rate ?? 0) > 0 ? 'text-red-600' : 'text-gray-600'">{{
+                                        (s.profit_rate !== null && s.profit_rate !== undefined) ? s.profit_rate + '%' :
+                                        '条件触发' }}</td>
+                                    <td class="px-4 py-3 text-gray-600 max-w-xs truncate" :title="s.reason">{{ s.reason
+                                        || '-' }}</td>
+                                </tr>
+                                <tr v-if="intraday.signals.length === 0">
+                                    <td colspan="6" class="px-4 py-8 text-center text-gray-400">暂无实时信号，策略引擎正在监控中...</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- 🌙 盘后模式视图 -->
+                <div v-else class="space-y-6">
+                    <div class="bg-gradient-to-r from-slate-50 to-blue-50 p-5 rounded-xl border border-blue-100">
+                        <h4 class="font-bold text-gray-800 mb-2">📊 {{ intraday.analysis.review || '今日操作复盘' }}</h4>
+                        <p class="text-sm text-gray-600 leading-relaxed">{{ intraday.analysis.outlook || '暂无明日展望数据。' }}
+                        </p>
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left border-collapse">
+                            <thead class="bg-gray-50 text-gray-500 text-xs uppercase tracking-wider font-semibold">
+                                <tr>
+                                    <th class="px-4 py-3">触发时间</th>
+                                    <th class="px-4 py-3">类型</th>
+                                    <th class="px-4 py-3">股票</th>
+                                    <th class="px-4 py-3">价格</th>
+                                    <th class="px-4 py-3">盈亏</th>
+                                    <th class="px-4 py-3">执行逻辑</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-gray-100 text-sm">
+                                <tr v-for="s in intraday.signals" :key="s.code+s.type"
+                                    class="hover:bg-gray-50 transition">
+                                    <td class="px-4 py-3 font-mono text-gray-600">{{ s.time }}</td>
+                                    <td class="px-4 py-3"><span class="px-2 py-1 rounded text-xs font-bold"
+                                            :class="s.type==='BUY' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'">{{
+                                            s.type }}</span></td>
+                                    <td class="px-4 py-3 font-mono">{{ s.code }}</td>
+                                    <td class="px-4 py-3 font-mono">{{ s.price }}</td>
+                                    <td class="px-4 py-3 font-mono"
+                                        :class="(s.profit_rate ?? 0) > 0 ? 'text-red-600' : 'text-gray-600'">{{
+                                        s.profit_rate }}%</td>
+                                    <td class="px-4 py-3 text-gray-600 max-w-xs truncate" :title="s.reason">{{ s.reason
+                                        }}</td>
+                                </tr>
+                                <tr v-if="intraday.signals.length === 0">
+                                    <td colspan="6" class="px-4 py-8 text-center text-gray-400">今日无信号记录，市场处于休整期。</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
                 </div>
             </div>
 
@@ -207,17 +335,18 @@
                         <div
                             class="bg-white rounded-2xl p-6 shadow-sm border border-gray-100 relative overflow-hidden group hover:shadow-md transition-shadow">
                             <div class="absolute right-0 top-0 h-full w-1"
-                                :class="backtestData.total_return >= 0 ? 'bg-red-500' : 'bg-green-500'"></div>
+                                :class="(backtestData.total_return ?? 0) >= 0 ? 'bg-red-500' : 'bg-green-500'"></div>
                             <div class="flex justify-between items-start">
                                 <div>
                                     <p class="text-sm font-medium text-gray-500 uppercase tracking-wider">总收益率</p>
                                     <h3 class="text-4xl font-extrabold mt-2 tracking-tight"
-                                        :class="backtestData.total_return >= 0 ? 'text-red-600' : 'text-green-600'">
-                                        {{ backtestData.total_return > 0 ? '+' : '' }}{{ backtestData.total_return }}%
+                                        :class="(backtestData.total_return ?? 0) >= 0 ? 'text-red-600' : 'text-green-600'">
+                                        {{ (backtestData.total_return ?? 0) > 0 ? '+' : '' }}{{
+                                        backtestData.total_return ?? 0 }}%
                                     </h3>
                                 </div>
                                 <div class="p-3 bg-gray-50 rounded-xl"
-                                    :class="backtestData.total_return >= 0 ? 'text-red-500' : 'text-green-500'">
+                                    :class="(backtestData.total_return ?? 0) >= 0 ? 'text-red-500' : 'text-green-500'">
                                     <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                                             d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"></path>
@@ -227,8 +356,8 @@
                             <div class="mt-4 flex items-center text-sm">
                                 <span class="text-gray-400 mr-2">总盈亏:</span>
                                 <span class="font-bold"
-                                    :class="backtestData.total_profit >= 0 ? 'text-red-600' : 'text-green-600'">¥{{
-                                    backtestData.total_profit?.toLocaleString() }}</span>
+                                    :class="(backtestData.total_profit ?? 0) >= 0 ? 'text-red-600' : 'text-green-600'">¥{{
+                                    (backtestData.total_profit ?? 0).toLocaleString() }}</span>
                             </div>
                         </div>
 
@@ -239,7 +368,7 @@
                                 <div>
                                     <p class="text-sm font-medium text-gray-500 uppercase tracking-wider">交易胜率</p>
                                     <h3 class="text-4xl font-extrabold mt-2 text-gray-800 tracking-tight">{{
-                                        backtestData.win_rate }}%</h3>
+                                        backtestData.win_rate ?? 0 }}%</h3>
                                 </div>
                                 <div class="p-3 bg-blue-50 text-blue-600 rounded-xl">
                                     <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -249,7 +378,7 @@
                                 </div>
                             </div>
                             <div class="mt-4 text-sm text-gray-400">共完成 <span class="font-bold text-gray-600">{{
-                                    backtestData.trade_count }}</span> 笔交易</div>
+                                    backtestData.trade_count ?? 0 }}</span> 笔交易</div>
                         </div>
 
                         <div
@@ -321,7 +450,7 @@
                                     </tr>
                                 </thead>
                                 <tbody class="divide-y divide-gray-100 text-sm">
-                                    <tr v-for="(t, index) in [...backtestData.trades].reverse()"
+                                    <tr v-for="(t, index) in [...(backtestData.trades || [])].reverse()"
                                         :key="t.code + '_' + t.sell_date"
                                         class="hover:bg-blue-50/60 transition-colors duration-150 group">
                                         <td class="px-6 py-4 text-center font-mono text-gray-400">#{{ index + 1 }}</td>
@@ -359,7 +488,7 @@
                             </table>
                         </div>
                         <div class="bg-gray-50 px-6 py-3 border-t border-gray-100 text-xs text-gray-400 text-center">
-                            显示最近 {{ backtestData.trades.length }} 笔交易记录
+                            显示最近 {{ backtestData.trades?.length || 0 }} 笔交易记录
                         </div>
                     </div>
                 </div>
@@ -389,7 +518,7 @@
     </div>
 
     <script>
-        const { createApp, ref, onMounted, onUnmounted, nextTick, watch } = Vue;
+        const { createApp, ref, onMounted, onUnmounted, nextTick, watch, computed } = Vue;
         const API_BASE = '/api';
 
         createApp({
@@ -406,6 +535,8 @@
                 });
 
                 const intraday = ref({ signals: [], analysis: {}, last_update: '' });
+                const positions = ref([]);
+                const candidates = ref([]);
                 let intradayTimer = null;
                 let chartInstance = null;
                 let resizeObserver = null;
@@ -417,6 +548,8 @@
                     { key: 'break', name: '一字开板低吸', icon: '💥' },
                     { key: 'shrink', name: '缩量回调 (主推)', icon: '📉' }
                 ];
+
+                const isPostMarket = computed(() => intraday.value.analysis?.mode === 'post');
 
                 const initResizeObserver = () => {
                     if (!chartCanvas.value) return;
@@ -440,52 +573,17 @@
                     const ctx = chartCanvas.value;
                     if (!ctx || ctx.offsetWidth === 0) return;
                     if (chartInstance) chartInstance.destroy();
-
                     try {
                         const labels = dataPoints.map(p => p.date.substring(5));
                         const values = dataPoints.map(p => p.value);
                         const startVal = values.length > 0 ? values[0] : 100000;
-
                         const gradient = ctx.getContext('2d').createLinearGradient(0, 0, 0, 400);
                         gradient.addColorStop(0, 'rgba(37, 99, 235, 0.2)');
                         gradient.addColorStop(1, 'rgba(37, 99, 235, 0.0)');
-
                         chartInstance = new Chart(ctx, {
                             type: 'line',
-                            data: {
-                                labels,
-                                datasets: [{
-                                    label: '账户净值',
-                                    data: values,
-                                    borderColor: '#2563eb',
-                                    backgroundColor: gradient,
-                                    borderWidth: 2.5, fill: true, tension: 0.4,
-                                    pointRadius: 0, pointHoverRadius: 6,
-                                    pointHoverBackgroundColor: '#fff',
-                                    pointHoverBorderColor: '#2563eb', pointHoverBorderWidth: 2
-                                }, {
-                                    label: '基准线',
-                                    data: new Array(labels.length).fill(startVal),
-                                    borderColor: '#9ca3af', borderWidth: 1, borderDash: [6, 6], fill: false, pointRadius: 0
-                                }]
-                            },
-                            options: {
-                                responsive: true, maintainAspectRatio: false,
-                                animation: { duration: 800, easing: 'easeOutQuart' },
-                                interaction: { mode: 'index', intersect: false },
-                                plugins: {
-                                    legend: { position: 'top', align: 'end', labels: { usePointStyle: true, boxWidth: 8 } },
-                                    tooltip: {
-                                        backgroundColor: 'rgba(255, 255, 255, 0.98)', titleColor: '#1f2937', bodyColor: '#4b5563',
-                                        borderColor: '#e5e7eb', borderWidth: 1, padding: 12, displayColors: true, cornerRadius: 8,
-                                        callbacks: { label: (ctx) => ` ${ctx.dataset.label}: ¥${ctx.parsed.y.toLocaleString(undefined, { maximumFractionDigits: 0 })}` }
-                                    }
-                                },
-                                scales: {
-                                    y: { beginAtZero: false, grid: { color: '#f3f4f6', drawBorder: false }, ticks: { color: '#9ca3af', callback: (val) => '¥' + (val / 10000).toFixed(1) + 'w', font: { size: 11 } } },
-                                    x: { grid: { display: false }, ticks: { color: '#9ca3af', font: { size: 11 }, maxRotation: 0, autoSkip: true, maxTicksLimit: 10 } }
-                                }
-                            }
+                            data: { labels, datasets: [{ label: '账户净值', data: values, borderColor: '#2563eb', backgroundColor: gradient, borderWidth: 2.5, fill: true, tension: 0.4, pointRadius: 0, pointHoverRadius: 6, pointHoverBackgroundColor: '#fff', pointHoverBorderColor: '#2563eb', pointHoverBorderWidth: 2 }, { label: '基准线', data: new Array(labels.length).fill(startVal), borderColor: '#9ca3af', borderWidth: 1, borderDash: [6, 6], fill: false, pointRadius: 0 }] },
+                            options: { responsive: true, maintainAspectRatio: false, animation: { duration: 800, easing: 'easeOutQuart' }, interaction: { mode: 'index', intersect: false }, plugins: { legend: { position: 'top', align: 'end', labels: { usePointStyle: true, boxWidth: 8 } }, tooltip: { backgroundColor: 'rgba(255, 255, 255, 0.98)', titleColor: '#1f2937', bodyColor: '#4b5563', borderColor: '#e5e7eb', borderWidth: 1, padding: 12, displayColors: true, cornerRadius: 8, callbacks: { label: (ctx) => ` ${ctx.dataset.label}: ¥${ctx.parsed.y.toLocaleString(undefined, { maximumFractionDigits: 0 })}` } } }, scales: { y: { beginAtZero: false, grid: { color: '#f3f4f6', drawBorder: false }, ticks: { color: '#9ca3af', callback: (val) => '¥' + (val / 10000).toFixed(1) + 'w', font: { size: 11 } } }, x: { grid: { display: false }, ticks: { color: '#9ca3af', font: { size: 11 }, maxRotation: 0, autoSkip: true, maxTicksLimit: 10 } } } }
                         });
                         chartRendered.value = true;
                     } catch (err) { console.error('[Chart Error]', err); }
@@ -496,21 +594,27 @@
                     try {
                         const res = await fetch(`${API_BASE}/backtest/${key}`);
                         if (!res.ok) throw new Error(`HTTP ${res.status}`);
-                        const data = await res.json();
-                        backtestData.value = data;
+                        backtestData.value = await res.json();
                     } catch (e) {
                         console.error('[Backtest Error]', e);
                         backtestData.value.message = "数据加载失败，请检查后端服务。";
-                    } finally {
-                        loading.value = false;
-                    }
+                    } finally { loading.value = false; }
                 };
 
-                const fetchIntraday = async () => {
+                const fetchDashboardData = async () => {
                     try {
-                        const res = await fetch(`${API_BASE}/intraday/signals`);
-                        if (res.ok) intraday.value = await res.json();
-                    } catch (e) { /* 静默失败，避免打断轮询 */ }
+                        const [posRes, candRes, sigRes] = await Promise.all([
+                            fetch(`${API_BASE}/positions/1`).then(r => r.ok ? r.json() : []),
+                            fetch(`${API_BASE}/candidates/today`).then(r => r.ok ? r.json() : []),
+                            fetch(`${API_BASE}/intraday/signals`).then(r => r.ok ? r.json() : { signals: [], analysis: {}, last_update: new Date().toLocaleTimeString() })
+                        ]);
+                        positions.value = Array.isArray(posRes) ? posRes : [];
+                        candidates.value = Array.isArray(candRes) ? candRes : [];
+                        intraday.value = (sigRes && typeof sigRes === 'object') ? sigRes : { signals: [], analysis: {}, last_update: new Date().toLocaleTimeString() };
+                        if (!intraday.value.analysis) intraday.value.analysis = {};
+                    } catch (e) {
+                        console.error('Dashboard fetch error:', e);
+                    }
                 };
 
                 const switchStrategy = (key) => {
@@ -522,18 +626,15 @@
                 watch(() => backtestData.value.curve, (newCurve) => {
                     if (newCurve?.length > 0) {
                         hasData.value = true;
-                        nextTick(() => {
-                            if (chartCanvas.value?.offsetWidth > 0 && !chartRendered.value) renderChart(newCurve);
-                        });
+                        nextTick(() => { if (chartCanvas.value?.offsetWidth > 0 && !chartRendered.value) renderChart(newCurve); });
                     }
                 }, { deep: true });
 
                 onMounted(() => {
                     fetchBacktestData(activeStrategy.value);
                     nextTick(initResizeObserver);
-                    // 启动盘中3秒轮询
-                    intradayTimer = setInterval(fetchIntraday, 3000);
-                    fetchIntraday();
+                    fetchDashboardData();
+                    intradayTimer = setInterval(fetchDashboardData, 3000);
                 });
 
                 onUnmounted(() => {
@@ -542,9 +643,7 @@
                     if (chartInstance) chartInstance.destroy();
                 });
 
-                return {
-                    activeStrategy, strategies, loading, backtestData, hasData, chartRendered, chartCanvas, intraday, switchStrategy
-                };
+                return { activeStrategy, strategies, loading, backtestData, hasData, chartRendered, chartCanvas, intraday, positions, candidates, switchStrategy, isPostMarket };
             }
         }).mount('#app');
     </script>

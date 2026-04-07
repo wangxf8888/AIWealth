@@ -54,7 +54,7 @@ def sync_positions_to_dashboard(strategy_key: str, volume: int = 1000):
 
 
 if __name__ == "__main__":
-    START_DATE = "2022-03-07"
+    START_DATE = "2019-03-07"
     END_DATE = datetime.now().strftime("%Y-%m-%d")
     print(f"📅 回测时间范围：{START_DATE} 至 {END_DATE}")
 

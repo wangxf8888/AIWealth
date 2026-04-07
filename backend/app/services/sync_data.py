@@ -51,7 +51,6 @@ def update_basics():
     today_str = datetime.now().strftime("%Y-%m-%d")
 
     try:
-        # 1. 获取今日全市场代码列表（极快，1~2秒）
         print(f"Step 1: Fetching today's security list...")
         rs_list = bs.query_all_stock(day=today_str)
         if rs_list.error_code != '0':
@@ -66,11 +65,9 @@ def update_basics():
             row = rs_list.get_row_data()
             if row and len(row) > 0: today_codes.add(row[0])
 
-        # 2. 获取数据库中已存在的代码
         c.execute("SELECT code FROM stock_basic")
         existing_codes = set(row[0] for row in c.fetchall())
 
-        # 3. 增量计算：只处理新增股票
         new_codes = today_codes - existing_codes
         print(f"📊 今日市场: {len(today_codes)} 只 | 库中已有: {len(existing_codes)} 只 | 🆕 新增待处理: {len(new_codes)} 只")
 
@@ -82,7 +79,6 @@ def update_basics():
         index_count = 0
         skip_count = 0
 
-        # 4. 仅对新增股票调用耗时的 query_stock_basic
         print(f"🔄 正在获取 {len(new_codes)} 只新股的详细信息...")
         for i, code_raw in enumerate(new_codes):
             try:
@@ -108,7 +104,6 @@ def update_basics():
                     index_count += 1
 
                 if (i + 1) % 5 == 0: conn.commit()
-                time.sleep(0.1) # 防封
             except Exception:
                 skip_count += 1
 
@@ -135,7 +130,6 @@ def update_daily_k(days_to_update=3):
     today = datetime.now().strftime("%Y-%m-%d")
     start_date = (datetime.now() - timedelta(days=days_to_update)).strftime("%Y-%m-%d")
 
-    # 1. 批量获取已有今日数据的股票，避免逐条查询 DB
     c.execute("SELECT DISTINCT code FROM stock_daily_k WHERE date=?", (today,))
     updated_codes = set(row[0] for row in c.fetchall())
     print(f"📊 已有今日数据: {len(updated_codes)} 只，直接跳过")
@@ -152,7 +146,6 @@ def update_daily_k(days_to_update=3):
 
     for idx, (code, code_name) in enumerate(stocks_to_update):
         try:
-            # 调用日线
             rs_daily = bs.query_history_k_data_plus(
                 code, "date,open,high,low,close,preclose,volume,amount,turn,pctChg",
                 start_date=start_date, end_date=today, frequency="d", adjustflag="3"
@@ -164,7 +157,6 @@ def update_daily_k(days_to_update=3):
             while rs_daily.next(): daily_list.append(rs_daily.get_row_data())
             if not daily_list: continue
 
-            # 调用60分钟线 (仅当有新日线时)
             rs_hourly = bs.query_history_k_data_plus(
                 code, "date,time,open,high,low,close",
                 start_date=start_date, end_date=today, frequency="60", adjustflag="3"
@@ -207,15 +199,12 @@ def update_daily_k(days_to_update=3):
                                    o_r, c_r, h_r, l_r, *hr_vals))
                 inserted_count += 1
 
-            # 🔧 修改：每处理 10 只股票打印一次进度
             if (idx + 1) % 10 == 0:
                 print(f"   📈 进度: {idx+1}/{total} | 已收集 {len(batch_data)} 条 | API调用: {api_calls}")
-                time.sleep(0.1)  # 保持 Baostock 防封限速
 
         except Exception:
             pass
 
-    # 2. 批量写入 SQLite (500条/批)
     if batch_data:
         print(f"\n💾 正在批量写入 {len(batch_data)} 条记录到数据库...")
         sql = """INSERT OR IGNORE INTO stock_daily_k
@@ -236,6 +225,218 @@ def update_daily_k(days_to_update=3):
     conn.close()
     bs.logout()
     print(f"\n🎉 UPDATE FINISHED! 新增记录: {inserted_count} | API总调用: {api_calls}")
+
+def backfill_historical_k(start_date="2021-01-01", end_date="2024-12-31"):
+    """
+    🔧 重构版：按年驱动 + 本地DB精准筛选活跃股 + 全速无休眠 + 实时进度
+    """
+    print(f">>> Starting Historical Backfill (NO SLEEP, DATE-DRIVEN): {start_date} to {end_date} ...")
+
+    def safe_login():
+        try: bs.logout()
+        except: pass
+        lg = bs.login()
+        if lg.error_code != '0':
+            print(f"❌ Re-login failed: {lg.error_msg}"); return False
+        return True
+
+    if not safe_login(): return
+
+    conn = get_conn()
+    c = conn.cursor()
+
+    # 预加载股票基础信息（用于精准筛选当年活跃股）
+    c.execute("SELECT code, code_name, ipo_date, out_date FROM stock_basic")
+    basics = c.fetchall()
+    name_map = {r[0]: r[1] for r in basics}
+    ipo_map = {r[0]: r[2] for r in basics}
+    out_map = {r[0]: r[3] for r in basics}
+
+    years = list(range(int(start_date[:4]), int(end_date[:4]) + 1))
+    total_inserted = 0
+    api_calls = 0
+    sql = """INSERT OR IGNORE INTO stock_daily_k
+             (date, code, code_name, open, high, low, close, preclose, volume, amount, turn, pctChg,
+              open_rate, close_rate, high_rate, low_rate,
+              hour1_open_rate, hour1_close_rate, hour1_high_rate, hour1_low_rate,
+              hour2_open_rate, hour2_close_rate, hour2_high_rate, hour2_low_rate,
+              hour3_open_rate, hour3_close_rate, hour3_high_rate, hour3_low_rate,
+              hour4_open_rate, hour4_close_rate, hour4_high_rate, hour4_low_rate)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"""
+
+    for year in years:
+        y_start = max(start_date, f"{year}-01-01")
+        y_end = min(end_date, f"{year}-12-31")
+        if y_start > y_end: continue
+
+        # 1. 从本地DB筛选当年活跃股票（IPO <= year 且 (未退市 或 退市年 > year)）
+        year_codes = []
+        for code in name_map:
+            ipo = ipo_map.get(code)
+            out = out_map.get(code)
+            if not ipo: continue
+            try:
+                ipo_y = int(str(ipo)[:4])
+                out_y = int(str(out)[:4]) if out else 9999
+                if ipo_y <= year <= out_y:
+                    year_codes.append(code)
+            except: continue
+
+        if not year_codes:
+            print(f"⚠️ {year}: 无活跃股票，跳过。"); continue
+        print(f"📅 {year}: 筛选到 {len(year_codes)} 只活跃股票，全速拉取中...")
+
+        batch_data = []
+        for idx, code in enumerate(year_codes):
+            try:
+                # 日线
+                rs_d = bs.query_history_k_data_plus(code, "date,open,high,low,close,preclose,volume,amount,turn,pctChg",
+                                                    start_date=y_start, end_date=y_end, frequency="d", adjustflag="3")
+                api_calls += 1
+                if rs_d.error_code != '0':
+                    if 'session' in rs_d.error_msg.lower(): safe_login()
+                    continue
+                daily_list = []
+                while rs_d.next(): daily_list.append(rs_d.get_row_data())
+                if not daily_list: continue
+
+                # 60分钟线
+                rs_h = bs.query_history_k_data_plus(code, "date,time,open,high,low,close",
+                                                    start_date=y_start, end_date=y_end, frequency="60", adjustflag="3")
+                api_calls += 1
+                hourly_map = {}
+                if rs_h.error_code == '0':
+                    h_list = []
+                    while rs_h.next(): h_list.append(rs_h.get_row_data())
+                    if h_list:
+                        df_h = pd.DataFrame(h_list, columns=['date','time','open','high','low','close'])
+                        for date_str, grp in df_h.groupby('date'):
+                            hourly_map[date_str] = grp.sort_values('time').head(4).to_dict('records')
+                elif 'session' in rs_h.error_msg.lower(): safe_login()
+
+                code_name = name_map.get(code, code)
+                df_d = pd.DataFrame(daily_list, columns=['date','open','high','low','close','preclose','volume','amount','turn','pctChg'])
+
+                for _, row in df_d.iterrows():
+                    date_str = row['date']
+                    preclose = float(row['preclose'] or 0) or float(row['close'] or 0)
+                    if preclose == 0: continue
+
+                    o, h, l, c_val = float(row['open']), float(row['high']), float(row['low']), float(row['close'])
+                    vol, amt, turn, pct = float(row['volume'] or 0), float(row['amount'] or 0), float(row['turn'] or 0), float(row['pctChg'] or 0)
+
+                    o_r, c_r, h_r, l_r = round((o-preclose)/preclose*100,2), round((c_val-preclose)/preclose*100,2), \
+                                           round((h-preclose)/preclose*100,2), round((l-preclose)/preclose*100,2)
+
+                    h_rows = hourly_map.get(date_str, [])
+                    hr_vals = []
+                    for i in range(4):
+                        if i < len(h_rows):
+                            hr = h_rows[i]
+                            ho, hc, hh, hl = float(hr.get('open',0)), float(hr.get('close',0)), float(hr.get('high',0)), float(hr.get('low',0))
+                            hr_vals.extend([round((ho-preclose)/preclose*100,2), round((hc-preclose)/preclose*100,2),
+                                            round((hh-preclose)/preclose*100,2), round((hl-preclose)/preclose*100,2)])
+                        else: hr_vals.extend([0.0]*4)
+
+                    batch_data.append((date_str, code, code_name, o, h, l, c_val, preclose, vol, amt, turn, pct,
+                                       o_r, c_r, h_r, l_r, *hr_vals))
+                    total_inserted += 1
+
+                # 🔧 实时进度：每 50 只打印一次
+                if (idx + 1) % 50 == 0:
+                    print(f"   📈 [{year}] 进度: {idx+1}/{len(year_codes)} | 已收集 {len(batch_data)+total_inserted} 条 | API: {api_calls}")
+
+                if len(batch_data) >= 1000:
+                    c.executemany(sql, batch_data); conn.commit(); batch_data.clear()
+            except Exception as e:
+                continue
+
+        if batch_data:
+            c.executemany(sql, batch_data); conn.commit()
+        print(f"✅ {year} 完成 | 当年累计新增: {total_inserted}")
+
+    conn.close()
+    try: bs.logout()
+    except: pass
+    print(f"\n🎉 HISTORICAL BACKFILL FINISHED!")
+    print(f"   总新增记录: {total_inserted} | API总调用: {api_calls}")
+
+def build_historical_core_pool(start_date="2018-01-01", end_date=None, top_n=50):
+    if end_date is None:
+        end_date = datetime.now().strftime("%Y-%m-%d")
+    print(f">>> Building Historical Core Pool: {start_date} to {end_date} ...")
+
+    conn = get_conn()
+    c = conn.cursor()
+
+    c.execute("""CREATE TABLE IF NOT EXISTS core_pool_history (
+        trade_date TEXT, code TEXT, code_name TEXT, reason TEXT,
+        total_limit_ups_1y INTEGER, created_at TEXT,
+        PRIMARY KEY (trade_date, code)
+    )""")
+    conn.commit()
+
+    c.execute("SELECT DISTINCT date FROM stock_daily_k WHERE date >= ? AND date <= ? ORDER BY date", (start_date, end_date))
+    all_dates = [row[0] for row in c.fetchall()]
+    if not all_dates:
+        print("❌ No trading days found in range."); conn.close(); return
+
+    from itertools import groupby
+    snapshot_dates = [list(g)[-1] for k, g in groupby(all_dates, key=lambda x: x[:7])]
+    print(f"📅 共生成 {len(snapshot_dates)} 个历史快照点 (月度)")
+
+    c.execute("SELECT code, code_name, tradeStatus, is_st, ipo_date FROM stock_basic")
+    basic_map = {r[0]: {"name": r[1], "status": r[2], "is_st": r[3], "ipo": r[4]} for r in c.fetchall()}
+
+    c.execute("SELECT code, date, pctChg FROM stock_daily_k WHERE date >= ? AND date <= ?", (start_date, end_date))
+    rows = c.fetchall()
+    df_all = pd.DataFrame(rows, columns=['code', 'date', 'pctChg'])
+    df_all['date'] = pd.to_datetime(df_all['date'])
+    df_all['pctChg'] = df_all['pctChg'].astype(float)
+    df_all['is_limit_up'] = df_all.apply(lambda r: 1 if (r['code'].startswith('sh.68') or r['code'].startswith('sz.30')) and r['pctChg'] >= 19.8 else (1 if r['pctChg'] >= 9.8 else 0), axis=1)
+
+    batch_insert = []
+    sql = "INSERT OR REPLACE INTO core_pool_history (trade_date, code, code_name, reason, total_limit_ups_1y, created_at) VALUES (?, ?, ?, ?, ?, ?)"
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    for i, target_date in enumerate(snapshot_dates):
+        target_dt = pd.to_datetime(target_date)
+        lookback_start = target_dt - pd.DateOffset(years=1)
+
+        mask = (df_all['date'] >= lookback_start) & (df_all['date'] <= target_dt)
+        df_window = df_all[mask]
+
+        lu_counts = df_window.groupby('code')['is_limit_up'].sum().reset_index()
+        lu_counts.columns = ['code', 'lu_1y']
+
+        valid_stocks = []
+        for _, row in lu_counts.iterrows():
+            code = row['code']
+            if code not in basic_map: continue
+            b = basic_map[code]
+            if b['is_st'] == 1 or b['status'] != '1': continue
+            if b['ipo'] and pd.to_datetime(b['ipo']) > lookback_start: continue
+            valid_stocks.append((code, int(row['lu_1y'])))
+
+        valid_stocks.sort(key=lambda x: x[1], reverse=True)
+        top_stocks = valid_stocks[:top_n]
+
+        for code, lu in top_stocks:
+            name = basic_map[code]['name']
+            reason = f"近1年涨停{lu}次 | 趋势强势"
+            batch_insert.append((target_date, code, name, reason, lu, now_str))
+
+        if len(batch_insert) >= 500:
+            c.executemany(sql, batch_insert); conn.commit(); batch_insert.clear()
+        if i % 10 == 0:
+            print(f"   📈 进度: {i+1}/{len(snapshot_dates)} | 快照: {target_date}")
+
+    if batch_insert:
+        c.executemany(sql, batch_insert); conn.commit()
+
+    conn.close()
+    print(f"\n🎉 Historical Core Pool Built!")
+    print(f"   快照点: {len(snapshot_dates)} | 每池Top: {top_n} | 总记录: {len(snapshot_dates)*top_n}")
 
 
 if __name__ == "__main__":

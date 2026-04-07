@@ -124,6 +124,7 @@ def init_db():
     # 记录每一天符合核心池标准的股票列表
     c.execute('''CREATE TABLE IF NOT EXISTS core_pool_history (
         trade_date TEXT,
+        created_at TEXT,
         code TEXT,
         code_name TEXT,
         market_cap REAL,
