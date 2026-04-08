@@ -178,6 +178,14 @@ class DragonHeadTurnoverStrategy(BaseStrategy):
 
         return score, "; ".join(reasons), should_buy
 
+    def check_buy_signal(self, date, candidate_codes, k_data_map):
+        """
+        【标准接口】买入判断：从候选股中选择最佳标的
+        返回: (best_code, reason, buy_ratio)
+        """
+        # 复用原有的 generate_h3_analysis_report 逻辑
+        return self.generate_h3_analysis_report(date, candidate_codes, k_data_map, {})
+
     def generate_h3_analysis_report(self, date, candidate_codes, k_data_map, history_map):
         """生成 H3 决策报告"""
         best_stock = None
@@ -235,24 +243,64 @@ class DragonHeadTurnoverStrategy(BaseStrategy):
         buy_ratio = 1.0 + (h4_open_rate / 100.0)
         return True, buy_ratio, f"深蹲反转：{reason}"
 
-    def check_sell_condition(self, hold_code, buy_date, buy_price, current_date, current_k_row, profit_rate, days_held):
-        """卖出条件判断"""
+    def check_sell_condition(self, hold_code, buy_price, current_date, current_k_row, profit_rate, days_held, is_last_day=False):
+        """
+        卖出条件判断
+        【非到期日】检查H1-H4，触发即卖
+        【到期日】检查H1-H3，触发用触发价，未触发用H4 Open
+        """
         if not isinstance(current_k_row, dict):
             current_k_row = dict(current_k_row)
 
-        h1_high = self._safe_float(current_k_row.get('hour1_high_rate'), 0)
-        h2_high = self._safe_float(current_k_row.get('hour2_high_rate'), 0)
-        h3_high = self._safe_float(current_k_row.get('hour3_high_rate'), 0)
-        current_low = self._safe_float(current_k_row.get('low'), 0)
-        max_h1h2h3_pct = max(h1_high, h2_high, h3_high)
+        preclose = self._safe_float(current_k_row.get('preclose'), 0.0)
+        if preclose == 0:
+            return False, "No PreClose", 0.0
 
-        if max_h1h2h3_pct >= self.t0_sell_threshold:
-            return True, f"冲高 {max_h1h2h3_pct:.1f}% 止盈"
-        if current_low > 0 and (current_low - buy_price) / buy_price <= self.stop_loss:
-            return True, f"触及硬止损 {self.stop_loss:.1%}"
-        if days_held >= self.max_hold_days:
-            return True, f"时间止损 ({self.max_hold_days}天)"
-        return False, "持有观察"
+        # 根据是否为到期日，决定检测范围
+        if is_last_day:
+            check_hours = range(1, 4)  # H1-H3
+        else:
+            check_hours = range(1, 5)  # H1-H4
+
+        # 收集指定时段的High
+        h_highs = []
+        triggered_hour = 0
+
+        for i in check_hours:
+            h_high = self._safe_float(current_k_row.get(f'hour{i}_high_rate'), 0)
+            h_highs.append(h_high)
+
+        max_h = max(h_highs) if h_highs else 0
+
+        # 止盈：任意时段冲高到阈值
+        if max_h >= self.t0_sell_threshold:
+            for i in check_hours:
+                h_high = self._safe_float(current_k_row.get(f'hour{i}_high_rate'), 0)
+                if h_high >= self.t0_sell_threshold:
+                    triggered_hour = i
+                    break
+
+            # 按触发时段的95%价格卖出
+            sell_ratio = 1.0 + (self.t0_sell_threshold * 0.95 / 100.0)
+            return True, f"冲高 (H{triggered_hour}{max_h:.1f}%) 止盈", sell_ratio
+
+        # 止损：检查最低价
+        current_low_rate = self._safe_float(current_k_row.get('low'), 0)
+        if current_low_rate > 0 and (current_low_rate - buy_price) / buy_price <= self.stop_loss:
+            sell_ratio = 1.0 + (self.stop_loss * 100 / 100.0)
+            return True, f"触及硬止损 {self.stop_loss:.1%}", sell_ratio
+
+        # 时间止损：持有到期
+        if is_last_day:
+            h4_open_rate = self._safe_float(current_k_row.get('hour4_open_rate'), 0)
+            if h4_open_rate != 0:
+                sell_ratio = 1.0 + (h4_open_rate / 100.0)
+                return True, f"时间止损 ({self.max_hold_days}天, H4Open:{h4_open_rate:.1f}%)", sell_ratio
+            else:
+                close_r = self._safe_float(current_k_row.get('close_rate'), 0)
+                return True, f"时间止损 ({self.max_hold_days}天)", 1.0 + (close_r/100)
+
+        return False, "持有观察", 0.0
 
     def calculate_intraday_profit(self, k_row, buy_price, shares):
         return 0.0, "未开启", []

@@ -163,6 +163,14 @@ class ChaseLimitUpStrategy(BaseStrategy):
         # 返回代码列表供回测引擎缓存
         return [c['code'] for c in candidates]
 
+    def check_buy_signal(self, date: str, candidate_codes: List[str], k_data_map: dict) -> Tuple[Optional[str], str, float]:
+        """
+        【标准接口】买入判断：从候选股中选择最佳标的
+        返回: (best_code, reason, buy_ratio)
+        """
+        # 复用原有的 generate_h3_analysis_report 逻辑
+        return self.generate_h3_analysis_report(date, candidate_codes, k_data_map, {})
+
     def generate_h3_analysis_report(self, date: str, candidate_codes: List[str], k_data_map: dict, history_map: dict) -> Tuple[Optional[str], str, float]:
         """
         【步骤 2：T 日盘中/H1 后】从候选池中选出今日开盘 1%~3% 的股票，并按昨日强度排序
@@ -230,22 +238,24 @@ class ChaseLimitUpStrategy(BaseStrategy):
         buy_ratio = 1.0 + (h1_open_rate / 100.0)
         return True, buy_ratio, f"H1 开盘执行 ({h1_open_rate:.2f}%)"
 
-    def check_sell_condition(self, hold_code: str, buy_price: float, current_date: str, current_k_row: dict, profit_rate: float, days_held: int) -> Tuple[bool, str, float]:
+    def check_sell_condition(self, hold_code: str, buy_price: float, current_date: str, current_k_row: dict, profit_rate: float, days_held: int, is_last_day: bool = False) -> Tuple[bool, str, float]:
         """
-        【步骤 3：T+1 日】无条件 H1 开盘卖出
-        逻辑：持有满 1 天，且在 T+1 日的 H1 阶段，直接卖出
+        【步骤3：T+1日】无条件H1开盘卖出
+        逻辑：持有满1天，且在T+1日的H1阶段，直接卖出
+
+        【特殊规则】连板策略max_hold_days=1，所以days_held>=1就是到期日
+        到期日：H1开盘卖出（用H1 Open）
         """
         if days_held < 1:
             return False, "Hold", 0.0
 
-        # 只要是 T+1 日，无论盈亏，H1 开盘即卖出
-        # 模拟中，我们用 H1_Open 作为卖出价
+        # T+1日，H1开盘即卖出
         h1_open_rate = self._safe_float(current_k_row.get('hour1_open_rate'), 0.0)
 
-        # 计算卖出价格比率 (相对于昨日收盘)
+        # 计算卖出价格比率（相对于昨日收盘）
         sell_ratio = 1.0 + (h1_open_rate / 100.0)
 
-        reason = f"T+1 纪律止盈/损 (H1 开盘 {h1_open_rate:.2f}%)"
+        reason = f"T+1 纪律止盈/损 (H1开盘 {h1_open_rate:.2f}%)"
 
         # 打印交易心理
         action = "✅ 盈利离场" if profit_rate > 0 else "❌ 止损离场"

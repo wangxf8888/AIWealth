@@ -147,6 +147,14 @@ class BreakOneWordStrategy(BaseStrategy):
 
         return True, f"一字开板低吸 (Open:{h1_open:.1f}% Low:{min_low_rate:.1f}%)", 1.0 + (self.buy_target_rate / 100.0)
 
+    def check_buy_signal(self, date, candidate_codes, k_data_map):
+        """
+        【标准接口】买入判断：从候选股中选择最佳标的
+        返回: (best_code, reason, buy_ratio)
+        """
+        # 复用原有的 generate_h3_analysis_report 逻辑
+        return self.generate_h3_analysis_report(date, candidate_codes, k_data_map, {})
+
     def generate_h3_analysis_report(self, date, candidate_codes, k_data_map, history_map):
         best_stock = None
         best_reason = ""
@@ -174,21 +182,75 @@ class BreakOneWordStrategy(BaseStrategy):
         ok, reason, ratio = self.evaluate_buy_signal(code, k_row, info)
         return (True, ratio, reason) if ok else (False, 0.0, reason)
 
-    def check_sell_condition(self, hold_code, buy_price, current_date, current_k_row, profit_rate, days_held):
-        if not isinstance(current_k_row, dict): current_k_row = dict(current_k_row)
-        if days_held >= 1:
-            h_rates = []
-            for i in range(1, 5):
-                h_rates.extend([
-                    self._to_float(current_k_row.get(f'hour{i}_high_rate'), 0.0),
-                    self._to_float(current_k_row.get(f'hour{i}_low_rate'), 0.0)
-                ])
-            if not h_rates: return True, "Data Error", 1.0
-            max_h, min_l = max(h_rates), min(h_rates)
-            if max_h >= self.take_profit_rate: return True, f"冲高止盈 ({max_h:.1f}%)", 1.0 + (max_h * 0.95 / 100.0)
-            if min_l <= -5.0: return True, f"急跌止损 ({min_l:.1f}%)", 1.0 + (min_l / 100.0)
-            close_r = self._to_float(current_k_row.get('close_rate'), 0.0)
-            return True, f"T+1 离场", 1.0 + (close_r/100)
+    def check_sell_condition(self, hold_code, buy_price, current_date, current_k_row, profit_rate, days_held, is_last_day=False):
+        """
+        卖出判断
+        【非到期日】检查H1-H4，触发即卖
+        【到期日】检查H1-H3，触发用触发价，未触发用H4 Open
+
+        注：break_one_word策略max_hold_days=1，所以days_held>=1就是到期日
+        """
+        if not isinstance(current_k_row, dict):
+            current_k_row = dict(current_k_row)
+
+        preclose = self._to_float(current_k_row.get('preclose'), 0.0)
+        if preclose == 0:
+            return False, "No PreClose", 0.0
+
+        # 根据是否为到期日，决定检测范围
+        if is_last_day:
+            check_hours = range(1, 4)  # H1-H3
+        else:
+            check_hours = range(1, 5)  # H1-H4
+
+        # 收集指定时段的High/Low
+        h_rates = []
+        triggered_hour = 0
+
+        for i in check_hours:
+            h_rates.extend([
+                self._to_float(current_k_row.get(f'hour{i}_high_rate'), 0.0),
+                self._to_float(current_k_row.get(f'hour{i}_low_rate'), 0.0)
+            ])
+
+        if not h_rates:
+            return True, "Data Error", 1.0
+
+        max_h = max(h_rates)
+        min_l = min(h_rates)
+
+        # 止盈：任意时段冲高到阈值
+        if max_h >= self.take_profit_rate:
+            for i in check_hours:
+                h_high = self._to_float(current_k_row.get(f'hour{i}_high_rate'), 0.0)
+                if h_high >= self.take_profit_rate:
+                    triggered_hour = i
+                    break
+
+            sell_ratio = 1.0 + (max_h * 0.95 / 100.0)
+            return True, f"冲高止盈 (H{triggered_hour}{max_h:.1f}%)", sell_ratio
+
+        # 止损：任意时段跌破-5%
+        if min_l <= -5.0:
+            for i in check_hours:
+                h_low = self._to_float(current_k_row.get(f'hour{i}_low_rate'), 0.0)
+                if h_low <= -5.0:
+                    triggered_hour = i
+                    break
+
+            sell_ratio = 1.0 + (min_l / 100.0)
+            return True, f"急跌止损 (H{triggered_hour}{min_l:.1f}%)", sell_ratio
+
+        # 时间止损：持有到期
+        if is_last_day:
+            h4_open_rate = self._to_float(current_k_row.get('hour4_open_rate'), 0.0)
+            if h4_open_rate != 0:
+                sell_ratio = 1.0 + (h4_open_rate / 100.0)
+                return True, f"T+1 离场 (H4Open:{h4_open_rate:.1f}%)", sell_ratio
+            else:
+                close_r = self._to_float(current_k_row.get('close_rate'), 0.0)
+                return True, f"T+1 离场", 1.0 + (close_r/100)
+
         return False, "Hold", 0.0
 
     def calculate_intraday_profit(self, k_row, buy_price, shares): return 0.0, "Disabled", []

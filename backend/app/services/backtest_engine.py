@@ -625,13 +625,26 @@ class BacktestEngine:
                         except Exception as e:
                             continue
 
-                    report_result = self.strategy.generate_h3_analysis_report(date, candidate_codes, candidate_rows, {})
-                    best_code = None; best_reason = ""; best_buy_ratio = 0.0
+                    # 【资金释放时段】
+                    capital_available_hour = 1
+                    if executed_sell:
+                        capital_available_hour = sell_triggered_hour
 
-                    if isinstance(report_result, tuple):
-                        if len(report_result) == 3: best_code, best_reason, best_buy_ratio = report_result
-                        elif len(report_result) == 2: best_code, best_reason = report_result
-                    else: best_code = report_result if report_result else None
+                    # 使用标准接口 check_buy_signal (传入资金释放时段)
+                    if hasattr(self.strategy, 'check_buy_signal'):
+                        import inspect
+                        sig = inspect.signature(self.strategy.check_buy_signal)
+                        if 'capital_available_hour' in sig.parameters:
+                            best_code, best_reason, best_buy_ratio = self.strategy.check_buy_signal(date, candidate_codes, candidate_rows, capital_available_hour)
+                        else:
+                            best_code, best_reason, best_buy_ratio = self.strategy.check_buy_signal(date, candidate_codes, candidate_rows)
+                    else:
+                        report_result = self.strategy.generate_h3_analysis_report(date, candidate_codes, candidate_rows, {})
+                        best_code = None; best_reason = ""; best_buy_ratio = 0.0
+                        if isinstance(report_result, tuple):
+                            if len(report_result) == 3: best_code, best_reason, best_buy_ratio = report_result
+                            elif len(report_result) == 2: best_code, best_reason = report_result
+                        else: best_code = report_result if report_result else None
 
                     if best_code and best_code in candidate_rows:
                         k_row = candidate_rows[best_code]

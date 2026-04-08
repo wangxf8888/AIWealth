@@ -1,5 +1,6 @@
 # backend/app/services/strategies/n_word_rebound.py
 from .base_strategy import BaseStrategy
+from typing import List, Dict, Tuple, Optional
 
 class NWordReboundStrategy(BaseStrategy):
     def __init__(self, use_core_pool=True):
@@ -8,26 +9,20 @@ class NWordReboundStrategy(BaseStrategy):
         super().__init__(f"N_Word_Rebound_{suffix}")
 
         # --- 策略参数 ---
-        # T-2: 第一天强势标准
-        self.day1_min_pct = 5.0       # 最小涨幅 5%
-        self.day1_is_limit_up = False # 是否强制要求涨停 (True 则必须涨停)
+        # T-3：涨停日
+        self.limit_up_min_pct = 9.5     # 涨停最低涨幅（9.5%）
 
-        # T-1: 第二天回调标准
-        self.day2_max_pct = 1.0       # 最大涨幅 (超过则视为继续强攻，非回调)
-        self.day2_min_pct = -4.0      # 最小跌幅 (跌太深说明走弱)
-        self.vol_shrink_ratio = 0.8   # 缩量比例：今日换手 < 昨日换手 * 0.8
-        self.break_mid_line = False   # 是否允许跌破第一天实体中位线 (False=严格不破)
+        # T-2到T-1：回调期标准
+        self.pullback_max_pct = -5.0    # 回调最大跌幅（-5%）
 
-        # T: 今天买入标准
-        self.buy_break_yesterday_high = True # 必须突破昨天高点
-        self.h2_buy_min_open = -2.0   # H2 开盘下限
-        self.h2_buy_max_open = 3.0    # H2 开盘上限 (避免高开太多追高)
+        # T（今天）：买入标准
+        self.buy_min_open = -5.0        # 买入开盘下限（-5%）
+        self.buy_max_open = 2.0         # 买入开盘上限（2%）
 
         # 止盈止损
-        self.max_hold_days = 3
-        self.take_profit_rate = 6.0
-        self.stop_loss_rate = -3.0
-        self.ma5_stop_loss = True     # 跌破 5 日线止损
+        self.max_hold_days = 3          # 最大持股3天
+        self.take_profit_rate = 5.0     # 止盈5%
+        self.stop_loss_rate = -3.0      # 止损-3%
 
         self.yesterday_candidates = []
 
@@ -36,17 +31,18 @@ class NWordReboundStrategy(BaseStrategy):
         try: return float(val)
         except: return default
 
-    def _calc_ma5(self, history_list):
-        """计算简单的 5 日均线 (收盘价)"""
-        if len(history_list) < 5: return None
-        closes = [self._to_float(h.get('close'), 0) for h in history_list[:5]]
-        if 0 in closes: return None
-        return sum(closes) / 5
-
     def select_candidates(self, date, pool_data, k_data_map, history_map):
+        """
+        选股逻辑：扫描符合N字反弹形态的股票
+
+        形态要求：
+        1. T-3：涨停（≥9.5%）
+        2. T-2到T-1：回调≥5%（2天累计跌幅）
+        3. T（今天）：等待买入信号（开盘-5%~2%）
+        """
         candidates = []
         mode_str = '核心池' if self.use_core_pool else '全市场'
-        print(f"\n🔍 [{date}] 扫描【N 字反包】候选股 (模式：{mode_str})...")
+        print(f"\n🔍 [{date}] 扫描【N字反弹】候选股 (模式：{mode_str})...")
 
         items_to_scan = []
         if self.use_core_pool:
@@ -63,133 +59,116 @@ class NWordReboundStrategy(BaseStrategy):
 
         for item in items_to_scan:
             code = item['code']
-            row_today = item['row'] # T 日数据
             hist_list = history_map.get(code, [])
 
-            # 需要至少 3 天数据 (T, T-1, T-2) + 5 天算 MA5
-            if len(hist_list) < 5: continue
-
-            row_t_minus_1 = hist_list[0] # T-1
-            row_t_minus_2 = hist_list[1] # T-2
-            row_t_minus_3 = hist_list[2] # T-3 (用于参考)
-
-            # --- 1. 检查 T-2 (第一天): 大阳线/涨停 ---
-            pct_2 = self._to_float(row_t_minus_2.get('pctChg'), 0)
-            open_2 = self._to_float(row_t_minus_2.get('open'), 0)
-            close_2 = self._to_float(row_t_minus_2.get('close'), 0)
-
-            if pct_2 < self.day1_min_pct: continue
-            if close_2 <= open_2: continue # 必须是阳线
-
-            # 计算第一天实体中位线
-            mid_point_2 = (open_2 + close_2) / 2
-
-            # --- 2. 检查 T-1 (第二天): 缩量回调 ---
-            pct_1 = self._to_float(row_t_minus_1.get('pctChg'), 0)
-            low_1 = self._to_float(row_t_minus_1.get('low'), 0)
-            turn_1 = self._to_float(row_t_minus_1.get('turn'), 0)
-            turn_2 = self._to_float(row_t_minus_2.get('turn'), 0)
-
-            # 2.1 涨跌幅范围
-            if not (self.day2_min_pct <= pct_1 <= self.day2_max_pct): continue
-
-            # 2.2 缩量检查 (关键！)
-            if turn_2 == 0 or turn_1 > (turn_2 * self.vol_shrink_ratio):
-                continue # 没有缩量，或者放量了
-
-            # 2.3 支撑位检查 (不破中位线 & 不破 5 日线)
-            if self.break_mid_line == False and low_1 < mid_point_2:
-                continue # 跌破了第一天实体中位
-
-            # 检查 5 日线
-            ma5 = self._calc_ma5(hist_list)
-            if ma5 and low_1 < ma5 * 0.98: # 允许轻微击穿，但不能太深
+            # 需要至少3天历史数据（T-3, T-2, T-1）
+            if len(hist_list) < 3:
                 continue
 
-            # --- 3. 检查 T (今天): 初步筛选 (开盘符合预期) ---
+            # hist_list[0] = T-1, hist_list[1] = T-2, hist_list[2] = T-3
+            row_t_minus_1 = hist_list[0]   # T-1：回调第2天
+            row_t_minus_2 = hist_list[1]   # T-2：回调第1天
+            row_t_minus_3 = hist_list[2]   # T-3：涨停日
+
+            # --- 1. 检查T-3：涨停日 ---
+            pct_t_minus_3 = self._to_float(row_t_minus_3.get('pctChg'), 0)
+            if pct_t_minus_3 < self.limit_up_min_pct:
+                continue
+
+            # 记录涨停日的收盘价
+            limit_up_close = self._to_float(row_t_minus_3.get('close'), 0)
+            if limit_up_close == 0:
+                continue
+
+            # --- 2. 检查T-2到T-1：回调期（2天累计跌幅≥5%）---
+            close_t_minus_1 = self._to_float(row_t_minus_1.get('close'), 0)  # T-1收盘
+
+            if close_t_minus_1 == 0:
+                continue
+
+            # 从涨停收盘到T-1收盘的跌幅
+            pullback_pct = (close_t_minus_1 - limit_up_close) / limit_up_close * 100
+
+            if pullback_pct > self.pullback_max_pct:  # 例如：-3% > -5%，不满足（跌幅不够）
+                continue
+
+            # --- 3. 检查今天（T）：开盘符合预期 ---
+            row_today = item['row']
             open_rate = self._to_float(row_today.get('open_rate'), 999)
-            if not (self.h2_buy_min_open <= open_rate <= self.h2_buy_max_open):
+
+            # 开盘不在目标范围，跳过
+            if not (self.buy_min_open <= open_rate <= self.buy_max_open):
                 continue
 
             valid_count += 1
             candidates.append({
                 'code': code,
                 'name': item['name'],
-                'day1_pct': pct_2,
-                'day2_pct': pct_1,
-                'shrink_ratio': turn_1 / turn_2 if turn_2 > 0 else 0,
-                'ma5': ma5,
-                'yesterday_high': self._to_float(row_t_minus_1.get('high'), 0)
+                'limit_up_pct': pct_t_minus_3,
+                'pullback_pct': pullback_pct,
+                'limit_up_close': limit_up_close,
+                'today_open_rate': open_rate
             })
 
-        # 排序：缩量越明显越好，第一天越强越好
-        candidates.sort(key=lambda x: (x['shrink_ratio'], -x['day1_pct']))
+        # 排序：回调越深越好，涨停越强越好
+        candidates.sort(key=lambda x: (x['pullback_pct'], -x['limit_up_pct']))
         self.yesterday_candidates = candidates
 
         if valid_count > 0:
-            print(f"   ✅ 发现 {valid_count} 只符合 N 字反包形态。")
-            print(f"   🔥 首选：{candidates[0]['code']} ({candidates[0]['name']}) [缩{candidates[0]['shrink_ratio']:.2f} | D1:{candidates[0]['day1_pct']:.1f}%]")
+            print(f"   ✅ 发现 {valid_count} 只符合N字反弹形态。")
+            print(f"   🔥 首选：{candidates[0]['code']} ({candidates[0]['name']}) [回调{candidates[0]['pullback_pct']:.1f}% | 涨停{candidates[0]['limit_up_pct']:.1f}%]")
             for i, c in enumerate(candidates[:3]):
-                print(f"      #{i+1} {c['code']}: 缩{c['shrink_ratio']:.2f} | D1:{c['day1_pct']:.1f}% | D2:{c['day2_pct']:.1f}%")
+                print(f"      #{i+1} {c['code']}: 回调{c['pullback_pct']:.1f}% | 涨停{c['limit_up_pct']:.1f}% | 今开{c['today_open_rate']:.1f}%")
         else:
             print(f"   💡 结果：无符合条件标的。")
 
         return [c['code'] for c in candidates]
 
-    def generate_h3_analysis_report(self, date, candidate_codes, k_data_map, history_map):
+    def check_buy_signal(self, date, candidate_codes, k_data_map):
+        """
+        【标准接口】买入判断：从候选股中选择最佳标的
+        返回: (best_code, reason, buy_ratio)
+        """
         if not candidate_codes:
             return None, "", 0.0
 
         best_code = None
         best_reason = ""
         best_buy_ratio = 0.0
-        selected_hour = 0
 
         for code in candidate_codes:
             info = next((s for s in self.yesterday_candidates if s['code'] == code), {})
             row_today = k_data_map.get(code, {})
             preclose = self._to_float(row_today.get('preclose'), 0)
-            if preclose == 0: continue
 
-            yesterday_high = info['yesterday_high']
-            target_price = yesterday_high * 1.005 # 突破价略高于昨日高点
+            if preclose == 0:
+                continue
 
             h2_open_rate = self._to_float(row_today.get('hour2_open_rate'), 999)
-            h2_high_rate = self._to_float(row_today.get('hour2_high_rate'), -999)
             h4_open_rate = self._to_float(row_today.get('hour4_open_rate'), 999)
-            h4_high_rate = self._to_float(row_today.get('hour4_high_rate'), -999)
 
             bought = False
 
-            # --- 尝试 H2 买入 (突破确认) ---
-            # 条件：开盘符合 + H2 最高价已经突破昨日高点
-            if h2_open_rate != 999 and h2_high_rate != -999:
-                if self.h2_buy_min_open <= h2_open_rate <= self.h2_buy_max_open:
-                    if h2_high_rate >= (self._to_float(row_today.get('hour2_open_rate'), 0) * 0.0 + (yesterday_high/preclose-1)*100):
-                        # 简化判断：只要 H2 最高涨幅对应的价格 > 昨日高价
-                        current_h2_high_price = preclose * (1 + h2_high_rate/100)
-                        if current_h2_high_price >= yesterday_high:
-                            best_code = code
-                            buy_price = preclose * (1 + h2_open_rate/100) # 按开盘或现价买
-                            best_buy_ratio = buy_price / preclose
-                            best_reason = f"N 字反包 (D1:{info['day1_pct']:.1f}% D2:缩{info['shrink_ratio']:.2f}) | 突破昨日高"
-                            selected_hour = 2
-                            bought = True
+            # --- 尝试 H2 买入 ---
+            if h2_open_rate != 999:
+                if self.buy_min_open <= h2_open_rate <= self.buy_max_open:
+                    best_code = code
+                    buy_ratio = 1.0 + (h2_open_rate / 100.0)
+                    best_buy_ratio = buy_ratio
+                    best_reason = f"N字反弹 (涨停{info['limit_up_pct']:.1f}% 回调{info['pullback_pct']:.1f}%) | H2Open:{h2_open_rate:.1f}%"
+                    bought = True
 
-            # --- 尝试 H4 买入 (尾盘确认) ---
+            # --- 尝试 H4 买入 ---
             if not bought and h4_open_rate != 999:
-                 if self.h2_buy_min_open <= h4_open_rate <= self.h2_buy_max_open: # 复用开盘范围逻辑，或者单独设 H4 范围
-                    current_h4_high_price = preclose * (1 + h4_high_rate/100) if h4_high_rate != -999 else preclose * (1 + h4_open_rate/100)
-                    if current_h4_high_price >= yesterday_high:
-                        best_code = code
-                        buy_price = preclose * (1 + h4_open_rate/100)
-                        best_buy_ratio = buy_price / preclose
-                        best_reason = f"N 字反包 (D1:{info['day1_pct']:.1f}% D2:缩{info['shrink_ratio']:.2f}) | H4 突破"
-                        selected_hour = 4
-                        bought = True
+                if self.buy_min_open <= h4_open_rate <= self.buy_max_open:
+                    best_code = code
+                    buy_ratio = 1.0 + (h4_open_rate / 100.0)
+                    best_buy_ratio = buy_ratio
+                    best_reason = f"N字反弹 (涨停{info['limit_up_pct']:.1f}% 回调{info['pullback_pct']:.1f}%) | H4Open:{h4_open_rate:.1f}%"
+                    bought = True
 
             if bought:
-                print(f"\n🚀【选中】{code} -> {best_reason} (时段:H{selected_hour})")
+                print(f"\n🚀【选中】{code} -> {best_reason}")
                 break
 
         if not best_code:
@@ -198,41 +177,71 @@ class NWordReboundStrategy(BaseStrategy):
         return best_code, best_reason, best_buy_ratio
 
     def generate_buy_signal(self, date, code, k_row, is_candidate=False):
-        # 逻辑同上，用于实盘信号生成
         if not is_candidate: return False, 0.0, "No"
-        # ... (省略重复代码，逻辑同 generate_h3_analysis_report) ...
-        # 为简洁起见，实际项目中应提取公共方法
         return False, 0.0, "Logic in Report"
 
-    def check_sell_condition(self, hold_code, buy_price, current_date, current_k_row, profit_rate, days_held):
+    def check_sell_condition(self, hold_code, buy_price, current_date, current_k_row, profit_rate, days_held, is_last_day=False):
+        """
+        卖出判断
+        【非到期日】检查H1-H4，触发即卖
+        【到期日】检查H1-H3，触发用触发价，未触发用H4 Open
+        """
         if not isinstance(current_k_row, dict):
             current_k_row = dict(current_k_row)
 
-        # 1. 获取当前价格和均线
-        current_close = self._to_float(current_k_row.get('close'), 0)
-        current_low = min([self._to_float(current_k_row.get(f'hour{i}_low_rate'), 0) for i in range(1,5)])
+        preclose = self._to_float(current_k_row.get('preclose'), 0.0)
+        if preclose == 0:
+            return False, "No PreClose", 0.0
 
-        # 简单估算 MA5 (实际需要传入历史数据，这里简化处理，假设策略外部维护或仅用收盘价估)
-        # 在真实引擎中，这里应该能访问到该股票的历史列表来计算实时 MA5
-        # 此处暂用固定逻辑：如果利润回撤严重也卖
-        close_rate = self._to_float(current_k_row.get('close_rate'), 0)
+        # 根据是否为到期日，决定检测范围
+        if is_last_day:
+            check_hours = range(1, 4)  # H1-H3
+        else:
+            check_hours = range(1, 5)  # H1-H4
 
-        # 2. 止盈止损
-        max_h = max([self._to_float(current_k_row.get(f'hour{i}_high_rate'), 0) for i in range(1,5)])
-        min_l = min([self._to_float(current_k_row.get(f'hour{i}_low_rate'), 0) for i in range(1,5)])
+        # 收集指定时段的High/Low
+        h_highs = []
+        h_lows = []
+        triggered_hour = 0
 
+        for i in check_hours:
+            h_highs.append(self._to_float(current_k_row.get(f'hour{i}_high_rate'), 0))
+            h_lows.append(self._to_float(current_k_row.get(f'hour{i}_low_rate'), 0))
+
+        max_h = max(h_highs) if h_highs else 0
+        min_l = min(h_lows) if h_lows else 0
+
+        # 止盈：任意时段冲高到阈值
         if max_h >= self.take_profit_rate:
-            return True, f"N 字冲高止盈 ({max_h:.1f}%)", 1.0 + (self.take_profit_rate * 0.95 / 100)
+            for i in check_hours:
+                h_high = self._to_float(current_k_row.get(f'hour{i}_high_rate'), 0)
+                if h_high >= self.take_profit_rate:
+                    triggered_hour = i
+                    break
 
+            sell_ratio = 1.0 + (self.take_profit_rate * 0.95 / 100)
+            return True, f"N字冲高止盈 (H{triggered_hour}{max_h:.1f}%)", sell_ratio
+
+        # 止损：任意时段跌破阈值
         if min_l <= self.stop_loss_rate:
-            return True, f"跌破止损 ({min_l:.1f}%)", 1.0 + (self.stop_loss_rate / 100)
+            for i in check_hours:
+                h_low = self._to_float(current_k_row.get(f'hour{i}_low_rate'), 0)
+                if h_low <= self.stop_loss_rate:
+                    triggered_hour = i
+                    break
 
-        # 3. 时间止损 (N 字失败，通常 3 天不涨就是弱)
-        if days_held >= self.max_hold_days:
-            return True, f"N 字失效 ({days_held}天)", 1.0 + (close_rate/100)
+            sell_ratio = 1.0 + (self.stop_loss_rate / 100)
+            return True, f"跌破止损 (H{triggered_hour}{min_l:.1f}%)", sell_ratio
 
-        # 4. 特殊逻辑：如果买入后当天就跌破昨日低点 (N 字结构破坏)
-        # 需要传入昨日低点数据，此处简化
+        # 时间止损：持有到期
+        if is_last_day:
+            h4_open_rate = self._to_float(current_k_row.get('hour4_open_rate'), 0)
+            if h4_open_rate != 0:
+                sell_ratio = 1.0 + (h4_open_rate / 100.0)
+                return True, f"N字失效 ({days_held}天, H4Open:{h4_open_rate:.1f}%)", sell_ratio
+            else:
+                close_r = self._to_float(current_k_row.get('close_rate'), 0)
+                return True, f"N字失效 ({days_held}天)", 1.0 + (close_r/100)
 
         return False, "Hold", 0.0
 

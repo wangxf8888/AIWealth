@@ -153,14 +153,26 @@ class TurnoverShrinkStrategy(BaseStrategy):
 
         return [c['code'] for c in candidates]
 
-    def generate_h3_analysis_report(self, date, candidate_codes, k_data_map, history_map):
+    def check_buy_signal(self, date, candidate_codes, k_data_map, capital_available_hour=1):
+        """
+        【标准接口】买入判断：从候选股中选择最佳标的
+        支持 H2 和 H4 双重买入时机
+
+        :param capital_available_hour: 资金释放时段 (1=H1, 2=H2, 3=H3, 4=H4)
+        :return: (best_code, reason, buy_ratio)
+        """
+        # 根据资金释放时段，决定使用哪个买点
+        return self.generate_h3_analysis_report(date, candidate_codes, k_data_map, {}, capital_available_hour)
+
+    def generate_h3_analysis_report(self, date, candidate_codes, k_data_map, history_map, capital_available_hour=1):
         """
         【核心修改】支持 H2 和 H4 双重买入时机
         逻辑：
-        1. 优先尝试 H2 买入。
-        2. 如果 H2 不满足，尝试 H4 买入（作为补票机会）。
+        1. 根据资金释放时段，决定使用哪个买点
+        2. 如果资金H1/H2释放，优先H2买入，备选H4
+        3. 如果资金H3/H4释放，只能用H4买入
+
         返回格式：(code, reason, buy_ratio)
-        注意：具体的资金校验由 engine 完成，这里只需返回“如果资金允许，我想在这个价位买”的信号。
         """
         if not candidate_codes:
             print(f"\n🛑【空仓】无候选股。")
@@ -183,17 +195,14 @@ class TurnoverShrinkStrategy(BaseStrategy):
             h2_open_rate = self._to_float(row_today.get('hour2_open_rate'), 999.0)
             h4_open_rate = self._to_float(row_today.get('hour4_open_rate'), 999.0)
 
-            # 如果没有 H4 数据（某些老数据可能缺失），用 H3 收盘或 H4 收盘近似，或者直接跳过 H4 逻辑
-            # 这里假设数据完整，必须显式有 hour4_open_rate
-            if h4_open_rate == 999.0:
-                # 尝试用 hour4_close_rate 或者 hour3_close_rate 作为备选？
-                # 严格来说，H4 Open 是 13:00 的价格。如果缺失，我们保守起见只检查 H2
-                h4_open_rate = None
-
             bought = False
 
-            # --- 尝试 1: H2 买入 ---
-            if h2_open_rate != 999.0:
+            # 根据资金释放时段，决定检查哪个买点
+            # 如果资金H1/H2释放，可以买H2或H4
+            # 如果资金H3/H4释放，只能买H4
+
+            # --- 尝试 1: H2 买入 (仅当资金H2或更早释放) ---
+            if capital_available_hour <= 2 and h2_open_rate != 999.0:
                 if self.h2_buy_min_open <= h2_open_rate <= self.h2_buy_max_open:
                     best_code = code
                     buy_price = preclose * (1 + h2_open_rate / 100.0)
@@ -202,8 +211,8 @@ class TurnoverShrinkStrategy(BaseStrategy):
                     selected_hour = 2
                     bought = True
 
-            # --- 尝试 2: H4 买入 (如果 H2 没买成，且 H4 数据存在且符合) ---
-            if not bought and h4_open_rate is not None:
+            # --- 尝试 2: H4 买入 (资金H4或更早释放，且H2没买成) ---
+            if not bought and capital_available_hour <= 4 and h4_open_rate != 999.0:
                 if self.h4_buy_min_open <= h4_open_rate <= self.h4_buy_max_open:
                     best_code = code
                     buy_price = preclose * (1 + h4_open_rate / 100.0)
@@ -256,11 +265,33 @@ class TurnoverShrinkStrategy(BaseStrategy):
         reason = f"缩量回调低吸 (H{chosen_hour}:{chosen_rate:.1f}%)"
         return True, buy_ratio, reason
 
-    def check_sell_condition(self, hold_code, buy_price, current_date, current_k_row, profit_rate, days_held):
+    def check_sell_condition(self, hold_code, buy_price, current_date, current_k_row, profit_rate, days_held, is_last_day=False):
+        """
+        卖出判断：根据是否为到期日，采用不同的检测策略
+
+        【非到期日】检查H1-H4，触发即卖
+        【到期日】检查H1-H3，触发用触发价，未触发用H4 Open
+        """
         if not isinstance(current_k_row, dict):
             current_k_row = dict(current_k_row)
+
+        preclose = self._to_float(current_k_row.get('preclose'), 0.0)
+        if preclose == 0:
+            return False, "No PreClose", 0.0
+
+        # 根据是否为到期日，决定检测范围
+        if is_last_day:
+            # 到期日：只检查H1-H3（14:00前必须决定）
+            check_hours = range(1, 4)  # 1, 2, 3
+        else:
+            # 非到期日：检查H1-H4
+            check_hours = range(1, 5)  # 1, 2, 3, 4
+
+        # 收集指定时段的High/Low
         h_rates = []
-        for i in range(1, 5):
+        triggered_hour = 0
+
+        for i in check_hours:
             h_high = self._to_float(current_k_row.get(f'hour{i}_high_rate'), 0.0)
             h_low = self._to_float(current_k_row.get(f'hour{i}_low_rate'), 0.0)
             h_rates.extend([h_high, h_low])
@@ -268,16 +299,45 @@ class TurnoverShrinkStrategy(BaseStrategy):
         if h_rates:
             max_h = max(h_rates)
             min_l = min(h_rates)
-            if max_h >= self.take_profit_rate:
-                sell_ratio = 1.0 + (self.take_profit_rate * 0.95 / 100.0)
-                return True, f"止盈 ({max_h:.1f}%)", sell_ratio
-            if min_l <= self.stop_loss_rate:
-                sell_ratio = 1.0 + (self.stop_loss_rate / 100.0)
-                return True, f"止损 ({min_l:.1f}%)", sell_ratio
 
-        if days_held >= self.max_hold_days:
-            close_r = self._to_float(current_k_row.get('close_rate'), 0.0)
-            return True, f"时间到 ({days_held}天)", 1.0 + (close_r/100)
+            # 止盈：任意时段冲高到阈值
+            if max_h >= self.take_profit_rate:
+                # 找到触发时段
+                for i in check_hours:
+                    h_high = self._to_float(current_k_row.get(f'hour{i}_high_rate'), 0.0)
+                    if h_high >= self.take_profit_rate:
+                        triggered_hour = i
+                        break
+
+                # 按触发时段的95%价格卖出
+                sell_ratio = 1.0 + (self.take_profit_rate * 0.95 / 100.0)
+                return True, f"止盈 (H{triggered_hour}冲高{max_h:.1f}%)", sell_ratio
+
+            # 止损：任意时段跌破阈值
+            if min_l <= self.stop_loss_rate:
+                # 找到触发时段
+                for i in check_hours:
+                    h_low = self._to_float(current_k_row.get(f'hour{i}_low_rate'), 0.0)
+                    if h_low <= self.stop_loss_rate:
+                        triggered_hour = i
+                        break
+
+                # 按触发时段的止损价卖出
+                sell_ratio = 1.0 + (self.stop_loss_rate / 100.0)
+                return True, f"止损 (H{triggered_hour}杀跌{min_l:.1f}%)", sell_ratio
+
+        # 时间止损：持有到期
+        if is_last_day:
+            # 到期日：如果H1-H3未触发，用H4 Open卖出
+            h4_open_rate = self._to_float(current_k_row.get('hour4_open_rate'), 0.0)
+            if h4_open_rate != 0:
+                sell_ratio = 1.0 + (h4_open_rate / 100.0)
+                return True, f"时间到 ({days_held}天, H4Open:{h4_open_rate:.1f}%)", sell_ratio
+            else:
+                # H4数据缺失，用收盘价
+                close_r = self._to_float(current_k_row.get('close_rate'), 0.0)
+                return True, f"时间到 ({days_held}天)", 1.0 + (close_r/100)
+
         return False, "Hold", 0.0
 
     def calculate_intraday_profit(self, k_row, buy_price, shares):

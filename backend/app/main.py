@@ -304,11 +304,24 @@ def get_intraday_signals():
                 k_row = c.execute("SELECT * FROM stock_daily_k WHERE code=? AND date=? LIMIT 1", (code, today_str)).fetchone()
                 k_dict = dict(zip([desc[0] for desc in c.description], k_row)) if k_row else {}
 
-                # 计算持仓天数
+                # 计算持仓天数（按交易日计算，而非自然日）
                 try:
-                    buy_dt = datetime.strptime(update_time.split(' ')[0], "%Y-%m-%d") if update_time else datetime.now()
-                    days_held = max(1, (datetime.now() - buy_dt).days + 1)
-                except: days_held = 1
+                    buy_date_str = update_time.split(' ')[0] if update_time else today_str
+                    # 查询买入日期到今天之间的交易日数量
+                    c.execute("""
+                        SELECT COUNT(DISTINCT date) FROM stock_daily_k 
+                        WHERE date > ? AND date <= ?
+                    """, (buy_date_str, today_str))
+                    trade_days = c.fetchone()[0]
+                    days_held = trade_days  # 买入当天不算，从次日开始计数
+                except Exception as e:
+                    print(f"⚠️ 计算持仓天数失败: {e}，使用降级方案")
+                    # 降级方案：使用自然日估算（不精确）
+                    try:
+                        buy_dt = datetime.strptime(buy_date_str, "%Y-%m-%d")
+                        days_held = max(0, (datetime.now() - buy_dt).days)
+                    except:
+                        days_held = 1
 
                 # ⚡ 严格调用策略原生卖出判断
                 try:
